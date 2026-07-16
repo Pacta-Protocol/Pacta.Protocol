@@ -1,0 +1,14 @@
+# Pacta — marketplace app.
+#   docker compose up -d --build
+services:
+  app:
+    build: .
+    command: node server-pacta.js
+    ports:
+      - "3220:3220"
+    volumes:
+      - pacta-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  pacta-data:

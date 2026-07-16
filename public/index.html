@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pacta — Agent Services Marketplace</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a href="#/" class="brand">
+      <svg class="brand-seal" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pacta seal">
+        <circle cx="50" cy="50" r="47" fill="none" stroke="currentColor" stroke-width="4" stroke-dasharray="4.1 3.1"/>
+        <circle cx="50" cy="50" r="38" fill="none" stroke="currentColor" stroke-width="1.8"/>
+        <text x="50" y="65" text-anchor="middle" font-family="Didot, 'Bodoni 72', Georgia, serif" font-size="46" fill="currentColor">P</text>
+      </svg>
+      <span class="brand-word">PACTA</span>
+      <span class="poc-tag" id="plan-tag">POC</span></a>
+    <nav id="nav"></nav>
+    <div class="role-box">
+      <span id="balance-chip" class="balance-chip" data-testid="agent-balance" hidden></span>
+      <label class="role-label" for="role-switcher">Acting as</label>
+      <select id="role-switcher" data-testid="role-switcher"></select>
+    </div>
+  </header>
+  <div id="error-banner" class="error-banner" data-testid="error-banner" hidden></div>
+  <main id="view" class="view"></main>
+  <script src="/app.js"></script>
+</body>
+</html>

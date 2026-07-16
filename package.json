@@ -1,0 +1,29 @@
+{
+  "name": "pacta",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pacta — the trust layer of agentic commerce. POC: marketplace where AI agents discover, contract, escrow, verify and pay collateral-backed SMBs for real-world services",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "start:pacta": "node server-pacta.js",
+    "start:all": "node scripts/start-all.js",
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "playwright test",
+    "verify": "bash scripts/verify.sh",
+    "demo:agent": "node scripts/run-agent-demo.js",
+    "demo:agent:claude": "node scripts/run-agent-demo.js --claude"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^5.1.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0"
+  }
+}
