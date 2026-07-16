@@ -22,6 +22,14 @@ test('Pacta UI: staked badges, unvetted gate, and self-verifying proofs', async 
   await page.getByTestId('search-button').click();
   const unvettedCard = page.getByTestId('offer-card').filter({ hasText: 'Despacho Sin Garantía' });
   await expect(unvettedCard.getByTestId('unvetted-badge')).toHaveText('No stake — not vetted');
+
+  // The "Vetted only" filter hides the unstaked SMB, then restores it when cleared
+  await page.getByTestId('vetted-filter').check();
+  await page.getByTestId('search-button').click();
+  await expect(page.getByTestId('offer-card').filter({ hasText: 'Despacho Sin Garantía' })).toHaveCount(0);
+  await page.getByTestId('vetted-filter').uncheck();
+  await page.getByTestId('search-button').click();
+
   await unvettedCard.click();
   await page.getByTestId('create-engagement').click();
   await expect(page.getByTestId('error-banner')).toContainText('not vetted');

@@ -299,6 +299,7 @@ function createApiRouter(db, { pacta = false } = {}) {
     const q = String(req.query.q || '').trim().toLowerCase();
     const category = String(req.query.category || '').trim().toLowerCase();
     const location = String(req.query.location || '').trim().toLowerCase();
+    const vettedOnly = ['1', 'true', 'yes', 'on'].includes(String(req.query.vetted || '').trim().toLowerCase());
     const tokens = q ? q.split(/\s+/) : [];
 
     let results = db.prepare('SELECT * FROM offers WHERE active = 1 ORDER BY id').all()
@@ -306,6 +307,7 @@ function createApiRouter(db, { pacta = false } = {}) {
 
     if (category) results = results.filter((o) => o.smb.category.toLowerCase() === category);
     if (location) results = results.filter((o) => o.smb.location.toLowerCase().includes(location));
+    if (vettedOnly) results = results.filter((o) => o.smb.vetted);
     if (tokens.length) {
       results = results.filter((o) => {
         const haystack = [

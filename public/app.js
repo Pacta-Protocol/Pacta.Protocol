@@ -9,7 +9,7 @@
   const state = {
     users: { agents: [], smbs: [], arbiters: [] },
     role: loadRole(), // { kind: 'agent'|'smb'|'arbiter', id } — persisted across refreshes
-    lastSearch: { q: '', category: '' },
+    lastSearch: { q: '', category: '', vetted: false },
     config: { plan: 'base', features: {} },
   };
   const pacta = () => state.config.plan === 'pacta';
@@ -164,10 +164,11 @@
   }
 
   async function searchResultsHtml() {
-    const { q, category } = state.lastSearch;
+    const { q, category, vetted } = state.lastSearch;
     const params = new URLSearchParams();
     if (q) params.set('q', q);
     if (category) params.set('category', category);
+    if (vetted) params.set('vetted', 'true');
     const offers = await api('GET', '/offers' + (params.size ? `?${params}` : ''));
     return offers.length
       ? offers.map(offerCard).join('')
@@ -175,7 +176,7 @@
   }
 
   async function viewSearch() {
-    const { q, category } = state.lastSearch;
+    const { q, category, vetted } = state.lastSearch;
     return `
       <h1>Find services</h1>
       <p class="sub">Search vetted SMBs offering real-world services your agent can contract, escrow and verify.</p>
@@ -185,6 +186,10 @@
           <option value="">All categories</option>
           ${['legal', 'tourism', 'real-estate', 'accounting'].map((c) => `<option value="${c}" ${c === category ? 'selected' : ''}>${c}</option>`).join('')}
         </select>
+        <label class="vetted-toggle" title="Show only SMBs with collateral staked">
+          <input type="checkbox" name="vetted" data-testid="vetted-filter" ${vetted ? 'checked' : ''}>
+          Vetted only
+        </label>
         <button class="btn" type="submit" data-testid="search-button">Search</button>
       </form>
       <div data-testid="search-results">
@@ -673,7 +678,7 @@
     try {
       clearError();
       if (form.dataset.form === 'search') {
-        state.lastSearch = { q: (data.q || '').trim(), category: data.category || '' };
+        state.lastSearch = { q: (data.q || '').trim(), category: data.category || '', vetted: !!data.vetted };
         const container = $('[data-testid="search-results"]');
         if (container) container.innerHTML = await searchResultsHtml();
         else await render();

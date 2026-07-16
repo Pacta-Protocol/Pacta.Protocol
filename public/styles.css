@@ -57,7 +57,11 @@ body {
   font-size: 15px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
+.view { flex: 1; }
 
 /* ---------- header / nav (dark navy) ------------------------------------- */
 .topbar {
@@ -180,9 +184,14 @@ textarea { resize: vertical; min-height: 60px; }
 label.field { display: block; margin-bottom: 12px; font-size: 13px; font-weight: 600; color: #344054; }
 label.field > * { margin-top: 5px; font-weight: 400; }
 
-.search-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+.search-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
 .search-bar input[type=text] { flex: 2; min-width: 220px; width: auto; }
 .search-bar select { flex: 0 0 160px; }
+.vetted-toggle {
+  display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
+  font-size: 14px; font-weight: 500; color: var(--ink); cursor: pointer; user-select: none;
+}
+.vetted-toggle input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--pacta-blue); cursor: pointer; }
 
 .steps { margin: 0; padding: 0; list-style: none; counter-reset: step; }
 .steps li {
@@ -218,3 +227,23 @@ table.tbl tr:last-child td { border-bottom: none; }
 .kv dd { margin: 0; font-weight: 500; }
 .notice { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin: 10px 0; }
 .ok-banner { background: var(--good-bg); color: var(--good); border-radius: 8px; padding: 10px 14px; font-size: 14px; font-weight: 600; margin: 10px 0; }
+
+/* ---------- footer (dark navy) ------------------------------------------ */
+.site-footer {
+  background: var(--pacta-bg);
+  color: var(--pacta-ink-soft);
+  border-top: 1px solid var(--pacta-border-d);
+  margin-top: 40px;
+}
+.footer-inner {
+  max-width: 1060px; margin: 0 auto; padding: 18px 22px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap;
+}
+.footer-brand { font-size: 13px; color: var(--pacta-ink-dim); }
+.footer-links { display: flex; gap: 20px; flex-wrap: wrap; }
+.footer-links a {
+  color: var(--pacta-ink-soft); text-decoration: none; font-size: 13px; font-weight: 500;
+  transition: color .12s;
+}
+.footer-links a:hover { color: var(--pacta-cyan-2); }
