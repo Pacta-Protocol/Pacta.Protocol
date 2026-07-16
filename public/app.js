@@ -721,11 +721,6 @@
   (async () => {
     try {
       try { state.config = await api('GET', '/config'); } catch { /* pre-Pacta server */ }
-      if (pacta()) {
-        const tag = document.getElementById('plan-tag');
-        tag.textContent = 'PACTA';
-        tag.style.background = '#b28a3a';
-      }
       await refreshUsers();
       await render();
     } catch (err) {

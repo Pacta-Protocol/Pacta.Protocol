@@ -9,9 +9,9 @@ const B = 'http://127.0.0.1:3101';
 test('Pacta UI: staked badges, unvetted gate, and self-verifying proofs', async ({ page }) => {
   const watcher = watchPage(page, { allow4xx: true }); // the vetting gate 409 is expected
 
-  // Header shows we're on Pacta; vetted badges mention the stake
+  // Header shows the Pacta Protocol brand; vetted badges mention the stake
   await page.goto(B + '/');
-  await expect(page.locator('#plan-tag')).toHaveText('PACTA');
+  await expect(page.locator('.brand')).toHaveAttribute('aria-label', 'Pacta Protocol');
   await page.getByTestId('search-input').fill('lawyer Costa Rica hotel');
   await page.getByTestId('search-button').click();
   const bufeteCard = page.getByTestId('offer-card').filter({ hasText: 'Bufete Herrera' });

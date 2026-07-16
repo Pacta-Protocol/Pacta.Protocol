@@ -1,6 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Pacta seal">
-  <circle cx="50" cy="50" r="50" fill="#0C1D16"/>
-  <circle cx="50" cy="50" r="42" fill="none" stroke="#C9A961" stroke-width="4" stroke-dasharray="4.1 3.1"/>
-  <circle cx="50" cy="50" r="33" fill="none" stroke="#C9A961" stroke-width="1.8"/>
-  <text x="50" y="64" text-anchor="middle" font-family="Didot, 'Bodoni 72', Georgia, serif" font-size="40" fill="#C9A961">P</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Pacta Protocol">
+  <rect width="64" height="64" rx="14" fill="#0A0E17"/>
+  <g fill="none" stroke="#ffffff" stroke-width="8.5" stroke-linecap="butt"
+     stroke-linejoin="round" transform="translate(8.5,6.5) scale(0.47)">
+    <path d="M31.5 21 V12 Q31.5 6 37.5 6 H86.5 Q92.5 6 92.5 12 V51 Q92.5 57 86.5 57 H77"/>
+    <path d="M58 57 H37.5 Q31.5 57 31.5 51 V33"/>
+    <path d="M11.5 27 H60.5 Q66.5 27 66.5 33 V72 Q66.5 78 60.5 78 H11.5 Q5.5 78 5.5 72 V33 Q5.5 27 11.5 27 Z"/>
+    <path d="M5.5 76 V102"/>
+  </g>
 </svg>
