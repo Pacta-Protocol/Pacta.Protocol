@@ -52,6 +52,46 @@ The protocol defines two profiles. A server MUST report which one it runs via
 Everything in this document applies to both profiles unless marked **[Pacta]**.
 The Base profile exists as a contrast baseline; new deployments SHOULD run Pacta.
 
+### 1.2 Architecture
+
+One engine, two equivalent surfaces. The MCP server holds no state and no
+privileged path: it wraps the public REST API 1:1, so an agent going through
+MCP can do exactly what a backend going through REST can, and nothing more.
+
+```mermaid
+flowchart LR
+  subgraph consumers ["Agents and applications"]
+    AG["MCP agents<br/>(Claude, ROMA, any MCP client)"]
+    BE["Backends and scripts"]
+    UI["Reference explorer UI"]
+  end
+  MCP["MCP server<br/>(stdio, 12 tools)"]
+  API["REST API"]
+  subgraph engine ["Protocol engine"]
+    LC["Lifecycle state machine (§4)"]
+    ES["Escrow and settlement (§5, §7)"]
+    ST["Staking, caps, slashing (§8)"]
+    RG["Registry verification (§9)"]
+  end
+  DB[("SQLite<br/>double-entry ledger (§6)")]
+  AG --> MCP
+  MCP --> API
+  BE --> API
+  UI --> API
+  API --> LC
+  API --> ES
+  API --> ST
+  API --> RG
+  LC --> DB
+  ES --> DB
+  ST --> DB
+  RG --> DB
+```
+
+Example applications (LandBridge, MedVoyage) live outside this diagram: they
+are MCP or REST consumers like any other, and MUST NOT require protocol
+modifications to function.
+
 ---
 
 ## 2. Actors
