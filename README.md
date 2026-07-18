@@ -178,7 +178,8 @@ the marketplace app.
   [docs/DECISIONS.md](docs/DECISIONS.md) — design decisions and rationale ·
   [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — how to deploy
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute ·
-  [GOVERNANCE.md](GOVERNANCE.md) — how protocol changes are decided
+  [GOVERNANCE.md](GOVERNANCE.md) — how protocol changes are decided ·
+  [CHANGELOG.md](CHANGELOG.md) — releases and versioning policy
 
 ## License
 
