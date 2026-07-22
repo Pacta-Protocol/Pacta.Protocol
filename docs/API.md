@@ -122,6 +122,15 @@ curl -s -X POST http://localhost:3210/api/engagements/1/resolve \
 
 Rulings apply to the escrowed funds: `release` → SMB, `refund` → agent, `split` → 50/50.
 
+## Health
+
+```bash
+curl -s http://localhost:3210/api/health  # {"status":"ok","plan":"base","ledger_ok":true}
+```
+
+Unauthenticated, never mutates anything — cheap enough for systemd/Caddy/uptime checks
+to poll directly. `ledger_ok` is the same invariant `/ledger/invariant` reports.
+
 ## Ledger & lookups
 
 ```bash

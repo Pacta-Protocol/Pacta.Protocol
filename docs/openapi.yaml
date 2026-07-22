@@ -73,6 +73,33 @@ paths:
                       registry_verification: { type: boolean }
                       agent_manifest: { type: boolean }
 
+  /health:
+    get:
+      operationId: getHealth
+      tags: [meta]
+      summary: Liveness check for deployment and monitoring
+      description: >-
+        Cheap, unauthenticated, never mutates anything. Suitable for systemd,
+        Caddy, or uptime checks.
+      responses:
+        '200':
+          description: The server and database are up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, plan, ledger_ok]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  plan:
+                    type: string
+                    enum: [base, pacta]
+                  ledger_ok:
+                    type: boolean
+                    description: Result of the ledger double-entry conservation invariant.
+
   /agent/manifest:
     get:
       operationId: getAgentManifest

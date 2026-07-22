@@ -415,3 +415,21 @@ test('validation & 404s: bad routes, bad ids, bad JSON', async (t) => {
   assert.equal((await api('POST', `/engagements/${e.id}/approve`, {})).status, 409, 'cannot approve a draft');
   assert.equal((await api('POST', `/engagements/${e.id}/rate`, { value: 'good' })).status, 409, 'cannot rate before settlement');
 });
+
+test('health check: GET /api/health on base and Pacta servers', async (t) => {
+  const base = await startTestServer({ pacta: false });
+  t.after(base.close);
+  const baseHealth = await base.api('GET', '/health');
+  assert.equal(baseHealth.status, 200);
+  assert.equal(baseHealth.body.status, 'ok');
+  assert.equal(baseHealth.body.plan, 'base');
+  assert.equal(baseHealth.body.ledger_ok, true, 'freshly seeded database satisfies the ledger invariant');
+
+  const pacta = await startTestServer({ pacta: true });
+  t.after(pacta.close);
+  const pactaHealth = await pacta.api('GET', '/health');
+  assert.equal(pactaHealth.status, 200);
+  assert.equal(pactaHealth.body.status, 'ok');
+  assert.equal(pactaHealth.body.plan, 'pacta');
+  assert.equal(pactaHealth.body.ledger_ok, true);
+});

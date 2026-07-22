@@ -193,6 +193,18 @@ function createApiRouter(db, { pacta = false } = {}) {
     });
   });
 
+  // ---------- health -----------------------------------------------------------
+
+  // Cheap, unauthenticated liveness check for deployment/monitoring (systemd,
+  // Caddy, uptime checks). Never mutates anything.
+  router.get('/health', (req, res) => {
+    res.json({
+      status: 'ok',
+      plan: pacta ? 'pacta' : 'base',
+      ledger_ok: checkInvariant(db).ok,
+    });
+  });
+
   // ---------- users / roles ---------------------------------------------------
 
   router.get('/users', (req, res) => {
