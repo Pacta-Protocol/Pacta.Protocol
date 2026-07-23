@@ -30,6 +30,11 @@ A change is **protocol-level** if it alters any of:
   completed | disputed → resolved`);
 - the registry-verification rules for proofs.
 
+A purely **additive, read-only, unauthenticated** route that leaves every existing
+route's shape and behavior untouched is not protocol-level and needs no proposal; the
+issue that specifies it is enough. The `GET /api/health` liveness check is the
+reference example.
+
 Because these ripple out to every agent and app on the protocol, open a **proposal**
 before writing the code. A proposal is just a GitHub issue (or Discussion) that lays
 out:
