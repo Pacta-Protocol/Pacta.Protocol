@@ -139,6 +139,43 @@ Demo registry references seeded for the Costa Rica scenario: `CR-RN-2026-104512`
 `CR-HAC-2026-55710` (tax filing). "Despacho Sin Garantía" is seeded unvetted to demo
 the gate.
 
+## Choose your registry
+
+Proofs verify against a pluggable registry adapter. The default keeps every demo
+and test deterministic; the other two make the trust anchor real:
+
+```bash
+npm run start:pacta                          # local: the seeded in-database registry (default)
+REGISTRY_URL=https://gw.example.com npm run start:pacta   # http: any gateway speaking the minimal JSON contract
+REGISTRY_ADAPTER=hacienda-cr npm run start:pacta          # real: Costa Rica's tax authority public lookup
+```
+
+The `http` contract is one route: `GET {REGISTRY_URL}/{ref}` returning
+`{ ref, kind, title, ... }` or 404. Put a small gateway in front of any official
+source (scraper, SOAP bridge, database mirror) and the protocol verifies against
+it. The `hacienda-cr` adapter needs no gateway and no API key: a cedula like
+`3-101-123456` resolves against `api.hacienda.go.cr` to a `tax_registration`
+record. When the configured registry cannot answer, the API returns `502`
+rather than guessing: a proof is never verified or rejected on a hunch.
+
+## Production hardening (all opt-in)
+
+The API stays deliberately open by default (that is the documented simulation
+boundary), and each protection is one environment variable away:
+
+- **API keys**: registration returns a `pk_...` key once; only its hash is
+  stored. `REQUIRE_API_KEYS=1` makes every mutation require the acting party's
+  key (`Authorization: Bearer pk_...`), `ARBITER_API_KEY` gates dispute
+  resolution, and reads stay open. Seeded identities claim keys via
+  `POST /api/agents/{id}/api-key` and `POST /api/smbs/{id}/api-key`.
+- **Rate limiting**: `RATE_LIMIT_PER_MIN` per client (default 600, `0`
+  disables), answered with `429` and `Retry-After`.
+- **Idempotency**: fund, approve, resolve and stake honor an `Idempotency-Key`
+  header; retries replay the stored response instead of moving money twice.
+- **Provider webhooks**: `POST /api/smbs/{id}/webhook` registers a URL and
+  returns an HMAC secret; engagement state changes arrive signed
+  (`X-Pacta-Signature`) instead of being polled for.
+
 ## Tests
 
 ```bash
@@ -157,10 +194,12 @@ The E2E suite starts its own server on port 3100 with a throwaway database and a
   trust-extensions build requires real collateral.
 - **Money**: an internal double-entry ledger in integer cents; accounts for the agent,
   each SMB, and one escrow account per engagement. No payment provider.
-- **Registry**: an in-app mock of the public registry; the verification interface is
-  built to swap in live registries (Costa Rica's Registro Nacional first).
+- **Registry**: the default adapter is an in-app mock; real verification is a
+  config flip away (see "Choose your registry"), with Costa Rica's tax authority
+  as the first live source.
 - **Proofs**: text (required) + optional URL; no file storage.
-- **Auth**: none — roles are a dropdown of dummy identities.
+- **Auth**: open by default; API keys exist and are enforced only when the
+  deployment sets `REQUIRE_API_KEYS=1` (see "Production hardening").
 
 ## Deployment
 

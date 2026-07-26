@@ -18,12 +18,16 @@ the protocol without modifying it. See the
 The proof-of-concept simulates the public registry in its own database. This
 release makes that boundary pluggable:
 
-- A `RegistryAdapter` interface between the protocol and any source of official
-  records. The current in-database registry becomes the reference adapter.
-- A first external adapter against a real public source: Costa Rica's Registro
-  Nacional exposes public lookups. Read-only and best-effort, but real records.
-- Conformance notes in the spec so third parties can write adapters for their
-  own jurisdictions.
+- [x] A registry adapter interface between the protocol and any source of
+  official records (`src/registry.js`). The in-database registry is now the
+  `local` reference adapter, and a generic `http` adapter plugs in any gateway
+  speaking a minimal JSON contract. Shipped on `main`.
+- [x] A first external adapter against a real public source: the `hacienda-cr`
+  adapter queries the public lookup of Costa Rica's tax authority (Ministerio
+  de Hacienda), which unlike the Registro Nacional needs no login. Read-only
+  and best-effort, but real records. Shipped on `main`.
+- [ ] Conformance notes in the spec so third parties can write adapters for
+  their own jurisdictions.
 
 This is the jump from demo to infrastructure: same protocol, real registries.
 
@@ -31,13 +35,15 @@ This is the jump from demo to infrastructure: same protocol, real registries.
 
 What separates a trustworthy PoC from something you can point real money at:
 
-- API keys for agents and SMBs (today the API is deliberately open; the spec
-  documents this as a simulation boundary).
-- Rate limiting.
-- Idempotency keys on money-moving operations.
-- Webhooks for the provider side (today providers poll for state changes).
-- An honest gaps document listing anything that still separates the
-  implementation from production use.
+- [x] API keys for agents and SMBs, opt-in via `REQUIRE_API_KEYS=1`; the open
+  default remains the documented simulation boundary. Shipped on `main`.
+- [x] Rate limiting (`RATE_LIMIT_PER_MIN`, default 600). Shipped on `main`.
+- [x] Idempotency keys on money-moving operations. Shipped on `main`.
+- [x] Webhooks for the provider side, HMAC-signed, replacing polling for state
+  changes. Shipped on `main`.
+- [ ] An honest gaps document listing anything that still separates the
+  implementation from production use
+  ([#9](https://github.com/Pacta-Protocol/Pacta.Protocol/issues/9)).
 
 ## Exploring - unscheduled
 

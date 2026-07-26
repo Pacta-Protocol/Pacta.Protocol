@@ -10,6 +10,38 @@ separately from this implementation; every release states which spec version it
 implements, so independent implementations can target the spec without tracking
 this codebase.
 
+## [Unreleased]
+
+Implements **protocol spec 0.1.0**. Additive and backward compatible: with the
+default configuration every route behaves exactly as in 0.1.1. Candidate v0.2.0.
+
+### Added
+
+- **Pluggable registry adapters** (`src/registry.js`): the registry a proof
+  verifies against is now an adapter behind one contract. The seeded SQLite
+  table becomes the `local` reference adapter (still the default); the `http`
+  adapter plugs in any gateway speaking a minimal JSON contract
+  (`REGISTRY_URL`); the `hacienda-cr` adapter queries Costa Rica's tax
+  authority public endpoint and maps a live cedula lookup to a
+  `tax_registration` record. A registry that cannot answer surfaces as `502`,
+  never as a verified or rejected proof. `GET /api/config` reports the active
+  adapter and registry records carry a `source` field.
+- **API keys**: SMB registration returns a `pk_`-prefixed key once (only the
+  SHA-256 hash is stored); seeded identities claim theirs via
+  `POST /agents/{id}/api-key` or `POST /smbs/{id}/api-key`, rotation requires
+  the current key. With `REQUIRE_API_KEYS=1` every mutation must carry the
+  right actor's key, dispute resolution requires `ARBITER_API_KEY`, and reads
+  stay open.
+- **Rate limiting**: fixed one-minute window per client,
+  `RATE_LIMIT_PER_MIN` (default 600, `0` disables), answered with `429` and
+  `Retry-After`.
+- **Idempotency keys**: fund, approve, resolve and stake honor an
+  `Idempotency-Key` header; the first 2xx response is stored and replayed on
+  retries, so a client that times out can never move money twice.
+- **Provider webhooks**: an SMB registers a URL at `POST /smbs/{id}/webhook`
+  and gets an HMAC signing secret once; engagement state changes are pushed as
+  signed events instead of forcing the provider to poll.
+
 ## [0.1.1] - 2026-07-23
 
 Implements **protocol spec 0.1.0**. Additive and backward compatible: no

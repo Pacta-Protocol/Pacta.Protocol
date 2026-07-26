@@ -16,6 +16,17 @@ info:
 
     Endpoints marked **[Pacta]** exist or change behavior only when the server
     runs the Pacta profile (`npm run start:pacta`, default port 3220).
+
+    **Hardening (all opt-in by configuration).** With `REQUIRE_API_KEYS=1` every
+    mutation must carry `Authorization: Bearer pk_...` for the acting party
+    (`401`/`403` otherwise) and dispute resolution requires the configured
+    arbiter key; reads always stay open. Requests beyond `RATE_LIMIT_PER_MIN`
+    (default 600 per client per minute, `0` disables) get `429` with a
+    `Retry-After` header. Money-moving POSTs honor an `Idempotency-Key` header:
+    the first 2xx response is stored and replayed verbatim on retries. Proof
+    verification runs against a pluggable registry adapter (`REGISTRY_ADAPTER`:
+    `local`, `http` or `hacienda-cr`); when the configured registry cannot
+    answer, affected endpoints return `502` rather than guessing.
   license:
     name: MIT
     identifier: MIT
@@ -25,8 +36,8 @@ info:
 externalDocs:
   description: Protocol specification (SPEC.md)
   url: https://github.com/Pacta-Protocol/Pacta.Protocol/blob/main/docs/SPEC.md
-# The reference implementation has no authentication: clients declare who they
-# act for. Hardening that boundary is deployment work (see SPEC.md, Appendix B).
+# Open by default (clients declare who they act for; SPEC.md Appendix B). When
+# the deployment sets REQUIRE_API_KEYS=1, mutations require the bearer key below.
 security: []
 servers:
   - url: http://localhost:3220/api
@@ -60,11 +71,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [plan, features]
+                required: [plan, registry_adapter, features, hardening]
                 properties:
                   plan:
                     type: string
                     enum: [base, pacta]
+                  registry_adapter:
+                    type: string
+                    enum: [local, http, hacienda-cr]
+                    description: Which registry adapter verifies proof references.
                   features:
                     type: object
                     required: [staking, registry_verification, agent_manifest]
@@ -72,6 +87,16 @@ paths:
                       staking: { type: boolean }
                       registry_verification: { type: boolean }
                       agent_manifest: { type: boolean }
+                  hardening:
+                    type: object
+                    required: [api_keys_enforced, rate_limit_per_min, idempotency_keys, provider_webhooks]
+                    properties:
+                      api_keys_enforced: { type: boolean }
+                      rate_limit_per_min:
+                        type: integer
+                        description: Requests per client per minute; 0 means disabled.
+                      idempotency_keys: { type: boolean }
+                      provider_webhooks: { type: boolean }
 
   /health:
     get:
@@ -222,10 +247,21 @@ paths:
                   description: "[Pacta] Optional initial collateral, integer cents."
       responses:
         '201':
-          description: The registered SMB.
+          description: The registered SMB, including its API key (shown only here).
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SmbPublic' }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SmbPublic'
+                  - type: object
+                    required: [api_key]
+                    properties:
+                      api_key:
+                        type: string
+                        description: >-
+                          Shown once at registration; only its hash is stored.
+                          Used as `Authorization: Bearer pk_smb_...` when the
+                          deployment enforces API keys.
         '400': { $ref: '#/components/responses/Validation' }
         '409': { $ref: '#/components/responses/Conflict' }
 
@@ -264,6 +300,7 @@ paths:
         Base-profile server.
       parameters:
         - $ref: '#/components/parameters/idParam'
+        - $ref: '#/components/parameters/idempotencyKeyParam'
       requestBody:
         required: true
         content:
@@ -282,6 +319,104 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SmbPublic' }
+        '400': { $ref: '#/components/responses/Validation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /agents/{id}/api-key:
+    post:
+      operationId: claimAgentApiKey
+      tags: [parties]
+      summary: Claim or rotate an agent's API key
+      description: |
+        The first claim on a keyless identity (seeded demo data) is open, as a
+        bootstrap. Once a key exists, rotation requires presenting the current
+        key in the `Authorization` header. The key is returned once; only its
+        SHA-256 hash is stored.
+      parameters:
+        - $ref: '#/components/parameters/idParam'
+      responses:
+        '201':
+          description: The new key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agent_id, api_key]
+                properties:
+                  agent_id: { type: integer }
+                  api_key: { type: string }
+        '403':
+          description: A key already exists and the current key was not presented.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /smbs/{id}/api-key:
+    post:
+      operationId: claimSmbApiKey
+      tags: [parties]
+      summary: Claim or rotate an SMB's API key
+      description: |
+        Same contract as `POST /agents/{id}/api-key`: first claim open on a
+        keyless identity, rotation requires the current key.
+      parameters:
+        - $ref: '#/components/parameters/idParam'
+      responses:
+        '201':
+          description: The new key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [smb_id, api_key]
+                properties:
+                  smb_id: { type: integer }
+                  api_key: { type: string }
+        '403':
+          description: A key already exists and the current key was not presented.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /smbs/{id}/webhook:
+    post:
+      operationId: setSmbWebhook
+      tags: [parties]
+      summary: Register a provider webhook (push instead of poll)
+      description: |
+        Engagement state changes the SMB is party to (`engagement.agreed`,
+        `.funded`, `.completed`, `.disputed`, `.resolved`) are POSTed to this URL
+        as JSON, signed with `X-Pacta-Signature: sha256=<HMAC-SHA256(body)>`
+        using the returned secret. Delivery is best-effort with one attempt and
+        a short timeout; the engagement state remains the source of truth.
+        Pass `url: null` to remove the webhook.
+      parameters:
+        - $ref: '#/components/parameters/idParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: [string, 'null']
+                  description: http(s) URL to deliver events to, or null to clear.
+      responses:
+        '201':
+          description: The webhook registration; the signing secret is shown only here.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [smb_id, webhook_url]
+                properties:
+                  smb_id: { type: integer }
+                  webhook_url: { type: [string, 'null'] }
+                  webhook_secret: { type: string }
         '400': { $ref: '#/components/responses/Validation' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -507,6 +642,7 @@ paths:
         Fails `409` (insufficient funds) leaving everything unchanged.
       parameters:
         - $ref: '#/components/parameters/idParam'
+        - $ref: '#/components/parameters/idempotencyKeyParam'
       responses:
         '200':
           description: The funded engagement (see `escrow_balance_cents`).
@@ -553,6 +689,7 @@ paths:
         '400': { $ref: '#/components/responses/Validation' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/RegistryUnavailable' }
 
   /engagements/{id}/submit:
     post:
@@ -582,6 +719,7 @@ paths:
         is structurally impossible. Irreversible: verify the proofs first.
       parameters:
         - $ref: '#/components/parameters/idParam'
+        - $ref: '#/components/parameters/idempotencyKeyParam'
       responses:
         '200':
           description: The completed engagement (escrow zeroed).
@@ -631,6 +769,7 @@ paths:
         to the agent; a stake drained to zero clears the vetted badge.
       parameters:
         - $ref: '#/components/parameters/idParam'
+        - $ref: '#/components/parameters/idempotencyKeyParam'
       requestBody:
         required: true
         content:
@@ -705,6 +844,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RegistryRecord' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/RegistryUnavailable' }
 
   /disputes:
     get:
@@ -767,6 +907,17 @@ components:
       in: path
       required: true
       schema: { type: integer }
+    idempotencyKeyParam:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string }
+      description: >-
+        Any unique string per logical attempt. The first 2xx response is stored
+        and replayed verbatim on retries with the same key (marked with an
+        `idempotency-replayed: true` response header), so a timed-out client can
+        retry without moving money twice. Reusing a key on a different
+        operation returns 422.
 
   responses:
     Validation:
@@ -784,6 +935,14 @@ components:
         Conflict with protocol rules: illegal state transition, locked contract,
         insufficient funds, unvetted SMB, exposure cap exceeded, unknown or
         wrong-kind registry record, duplicate rating or duplicate SMB name.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RegistryUnavailable:
+      description: |
+        The configured registry adapter could not answer (network failure,
+        upstream error, malformed response). The proof is neither verified nor
+        rejected; retry when the registry is reachable.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -937,16 +1096,24 @@ components:
 
     RegistryRecord:
       type: object
-      required: [ref, kind, title, issued_to, details, created_at]
+      required: [ref, kind, title, issued_to, details, created_at, source]
       properties:
         ref: { type: string }
         kind:
           type: string
-          description: Open vocabulary; the seed data uses incorporation, land_eligibility, permit, tax_filing.
+          description: >-
+            Open vocabulary; the seed data uses incorporation, land_eligibility,
+            permit, tax_filing. The hacienda-cr adapter answers tax_registration.
         title: { type: string }
         issued_to: { type: string }
         details: { type: string }
-        created_at: { type: string }
+        created_at:
+          type: [string, 'null']
+          description: Null when the upstream registry does not date its records.
+        source:
+          type: string
+          enum: [local, http, hacienda-cr]
+          description: The registry adapter that answered.
 
     Account:
       type: object
