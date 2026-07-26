@@ -5,6 +5,7 @@ const {
   LedgerError, getOrCreateAccount, getAccount, transfer, checkInvariant,
 } = require('./ledger');
 const staking = require('./staking');
+const { LocalRegistryAdapter, RegistryUnavailableError } = require('./registry');
 
 class ApiError extends Error {
   constructor(status, message) {
@@ -26,9 +27,12 @@ const TRANSITIONS = {
   resolve: { from: ['disputed'], to: 'resolved' },
 };
 
-function createApiRouter(db, { pacta = false } = {}) {
+function createApiRouter(db, { pacta = false, registry = null } = {}) {
   const router = express.Router();
   router.use(express.json());
+  // Where proof references get verified. Defaults to the seeded local registry;
+  // see src/registry.js for the adapter contract and the external adapters.
+  const registryAdapter = registry || new LocalRegistryAdapter(db);
 
   // ---------- helpers --------------------------------------------------------
 
@@ -185,6 +189,7 @@ function createApiRouter(db, { pacta = false } = {}) {
   router.get('/config', (req, res) => {
     res.json({
       plan: pacta ? 'pacta' : 'base',
+      registry_adapter: registryAdapter.name,
       features: {
         staking: pacta,
         registry_verification: pacta,
@@ -470,7 +475,7 @@ function createApiRouter(db, { pacta = false } = {}) {
   });
 
   // SMB marks a step complete with proof. Only after escrow is funded.
-  router.post('/engagements/:id/steps/:stepId/complete', (req, res) => {
+  router.post('/engagements/:id/steps/:stepId/complete', async (req, res) => {
     const e = getEngagementOr404(req.params.id);
     if (!['funded', 'in_progress'].includes(e.state)) {
       throw new ApiError(409,
@@ -493,7 +498,7 @@ function createApiRouter(db, { pacta = false } = {}) {
         throw new ApiError(400,
           `this step requires a public registry reference (kind: ${step.verification_kind})`);
       }
-      const record = db.prepare('SELECT * FROM registry_records WHERE ref = ?').get(String(body.registry_ref));
+      const record = await registryAdapter.lookup(String(body.registry_ref));
       if (!record) {
         throw new ApiError(409, `registry reference '${body.registry_ref}' not found in the public registry`);
       }
@@ -620,12 +625,13 @@ function createApiRouter(db, { pacta = false } = {}) {
 
   // ---------- public registry (Pacta) + agent surface ---------------------------
 
-  router.get('/registry/:ref', (req, res) => {
-    const record = db.prepare('SELECT * FROM registry_records WHERE ref = ?').get(req.params.ref);
+  router.get('/registry/:ref', async (req, res) => {
+    const record = await registryAdapter.lookup(req.params.ref);
     if (!record) throw new ApiError(404, `no public record with reference '${req.params.ref}'`);
     res.json({
       ref: record.ref, kind: record.kind, title: record.title,
       issued_to: record.issued_to, details: record.details, created_at: record.created_at,
+      source: record.source,
     });
   });
 
@@ -691,7 +697,7 @@ function createApiRouter(db, { pacta = false } = {}) {
 
   // eslint-disable-next-line no-unused-vars
   router.use((err, req, res, next) => {
-    if (err instanceof ApiError || err instanceof LedgerError) {
+    if (err instanceof ApiError || err instanceof LedgerError || err instanceof RegistryUnavailableError) {
       return res.status(err.status).json({ error: err.message });
     }
     if (err.type === 'entity.parse.failed') {

@@ -2,8 +2,8 @@
 const { createApp } = require('../src/app');
 
 // Starts a fresh app on an ephemeral port with an isolated in-memory DB.
-function startTestServer({ pacta = false } = {}) {
-  const { app, db } = createApp({ dbPath: ':memory:', pacta });
+function startTestServer({ pacta = false, registry } = {}) {
+  const { app, db } = createApp({ dbPath: ':memory:', pacta, registry });
   return new Promise((resolve) => {
     const server = app.listen(0, () => {
       const base = `http://127.0.0.1:${server.address().port}`;

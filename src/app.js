@@ -4,18 +4,20 @@ const express = require('express');
 const { openDb } = require('./db');
 const { seedIfEmpty } = require('./seed');
 const { createApiRouter } = require('./api');
+const { createRegistryAdapter } = require('./registry');
 
-function createApp({ dbPath, pacta } = {}) {
+function createApp({ dbPath, pacta, registry } = {}) {
   const isPacta = pacta ?? process.env.PACTA === '1';
   const db = openDb(dbPath);
   const seeded = seedIfEmpty(db, { pacta: isPacta });
+  const registryAdapter = registry || createRegistryAdapter(db);
 
   const app = express();
   app.disable('x-powered-by');
-  app.use('/api', createApiRouter(db, { pacta: isPacta }));
+  app.use('/api', createApiRouter(db, { pacta: isPacta, registry: registryAdapter }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
 
-  return { app, db, seeded, pacta: isPacta };
+  return { app, db, seeded, pacta: isPacta, registry: registryAdapter };
 }
 
 module.exports = { createApp };

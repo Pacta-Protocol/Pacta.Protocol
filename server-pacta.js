@@ -8,10 +8,11 @@ const { createApp } = require('./src/app');
 
 const PORT = Number(process.env.PORT || 3220);
 const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'pacta.db');
-const { app, seeded } = createApp({ dbPath, pacta: true });
+const { app, seeded, registry } = createApp({ dbPath, pacta: true });
 
 const server = app.listen(PORT, () => {
   console.log(`[PACTA] Agent Services Marketplace running at http://localhost:${PORT}`);
+  console.log(`[PACTA] Registry adapter: ${registry.name}`);
   if (seeded) console.log('[PACTA] Seed data loaded (stakes, public registry, unvetted SMB demo).');
 });
 
