@@ -7,6 +7,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
+  api_key_hash TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -18,6 +19,9 @@ CREATE TABLE IF NOT EXISTS smbs (
   description TEXT NOT NULL DEFAULT '',
   capabilities TEXT NOT NULL DEFAULT '',
   vetted INTEGER NOT NULL DEFAULT 1,
+  api_key_hash TEXT,
+  webhook_url TEXT,
+  webhook_secret TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -108,6 +112,16 @@ CREATE TABLE IF NOT EXISTS engagement_steps (
   proof_verified INTEGER NOT NULL DEFAULT 0
 );
 
+-- Idempotency: the stored 2xx response for a money-moving POST, replayed
+-- verbatim when a client retries with the same Idempotency-Key header.
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,
+  status INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS ratings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   engagement_id INTEGER UNIQUE REFERENCES engagements(id),
@@ -137,6 +151,10 @@ function migrate(db) {
     "ALTER TABLE engagement_steps ADD COLUMN verification_kind TEXT",
     "ALTER TABLE engagement_steps ADD COLUMN proof_registry_ref TEXT",
     "ALTER TABLE engagement_steps ADD COLUMN proof_verified INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE agents ADD COLUMN api_key_hash TEXT",
+    "ALTER TABLE smbs ADD COLUMN api_key_hash TEXT",
+    "ALTER TABLE smbs ADD COLUMN webhook_url TEXT",
+    "ALTER TABLE smbs ADD COLUMN webhook_secret TEXT",
   ];
   for (const sql of alters) {
     try { db.exec(sql); } catch { /* column already exists */ }

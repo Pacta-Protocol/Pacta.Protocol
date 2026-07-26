@@ -6,6 +6,7 @@ const {
 } = require('./ledger');
 const staking = require('./staking');
 const { LocalRegistryAdapter, RegistryUnavailableError } = require('./registry');
+const { createHardening, HardeningError } = require('./hardening');
 
 class ApiError extends Error {
   constructor(status, message) {
@@ -27,12 +28,15 @@ const TRANSITIONS = {
   resolve: { from: ['disputed'], to: 'resolved' },
 };
 
-function createApiRouter(db, { pacta = false, registry = null } = {}) {
+function createApiRouter(db, { pacta = false, registry = null, hardening = {} } = {}) {
   const router = express.Router();
   router.use(express.json());
   // Where proof references get verified. Defaults to the seeded local registry;
   // see src/registry.js for the adapter contract and the external adapters.
   const registryAdapter = registry || new LocalRegistryAdapter(db);
+  // API keys, rate limiting, idempotency, provider webhooks (src/hardening.js).
+  const hard = createHardening(db, hardening);
+  router.use(hard.rateLimiter);
 
   // ---------- helpers --------------------------------------------------------
 
@@ -195,6 +199,12 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
         registry_verification: pacta,
         agent_manifest: true,
       },
+      hardening: {
+        api_keys_enforced: hard.enabled.requireKeys,
+        rate_limit_per_min: hard.enabled.rateLimitPerMin,
+        idempotency_keys: true,
+        provider_webhooks: true,
+      },
     });
   });
 
@@ -255,15 +265,45 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
       }
       return smbId;
     });
-    res.status(201).json(smbPublic(db.prepare('SELECT * FROM smbs WHERE id = ?').get(id)));
+    // The key is shown once, here; only its hash is stored.
+    const apiKey = hard.issueKey('smb', id);
+    res.status(201).json({ ...smbPublic(db.prepare('SELECT * FROM smbs WHERE id = ?').get(id)), api_key: apiKey });
+  });
+
+  // First claim on a keyless (seeded) identity is open; rotation afterwards
+  // requires presenting the current key in the Authorization header.
+  for (const kind of ['agent', 'smb']) {
+    router.post(`/${kind}s/:id/api-key`, (req, res) => {
+      const auth = req.get('authorization') || '';
+      const presented = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim() || null;
+      const key = hard.claimKey(kind, req.params.id, presented);
+      res.status(201).json({ [`${kind}_id`]: Number(req.params.id), api_key: key });
+    });
+  }
+
+  // Provider webhook: the SMB registers a URL and gets a signing secret back
+  // (shown once). Engagement state changes are POSTed there, HMAC-signed.
+  router.post('/smbs/:id/webhook', (req, res) => {
+    const smb = db.prepare('SELECT * FROM smbs WHERE id = ?').get(req.params.id);
+    if (!smb) throw new ApiError(404, 'SMB not found');
+    hard.requireActor(req, 'smb', smb.id);
+    const body = req.body || {};
+    if (body.url === undefined) throw new ApiError(400, 'missing required field: url');
+    const secret = hard.setWebhook(smb.id, body.url || null);
+    res.status(201).json({
+      smb_id: Number(smb.id),
+      webhook_url: body.url || null,
+      ...(secret ? { webhook_secret: secret } : {}),
+    });
   });
 
   // Pacta: post (more) stake — a simulated external deposit into the SMB's
   // collateral account. Restores/grants the vetted badge.
-  router.post('/smbs/:id/stake', (req, res) => {
+  router.post('/smbs/:id/stake', hard.idempotent, (req, res) => {
     if (!pacta) throw new ApiError(404, 'staking is a Pacta feature');
     const smb = db.prepare('SELECT * FROM smbs WHERE id = ?').get(req.params.id);
     if (!smb) throw new ApiError(404, 'SMB not found');
+    hard.requireActor(req, 'smb', smb.id);
     const body = requireBody(req, ['amount_cents']);
     const amount = Number(body.amount_cents);
     if (!Number.isInteger(amount) || amount <= 0) {
@@ -296,6 +336,7 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
     const body = requireBody(req, ['smb_id', 'title', 'price_cents', 'upfront_pct']);
     const smb = db.prepare('SELECT * FROM smbs WHERE id = ?').get(body.smb_id);
     if (!smb) throw new ApiError(404, 'SMB not found');
+    hard.requireActor(req, 'smb', smb.id);
     const price = Number(body.price_cents);
     const upfront = Number(body.upfront_pct);
     if (!Number.isInteger(price) || price <= 0) throw new ApiError(400, 'price_cents must be a positive integer');
@@ -366,6 +407,7 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
     if (!offer) throw new ApiError(404, 'offer not found');
     const agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(body.agent_id);
     if (!agent) throw new ApiError(404, 'agent not found');
+    hard.requireActor(req, 'agent', agent.id);
     if (pacta) {
       const smb = db.prepare('SELECT * FROM smbs WHERE id = ?').get(offer.smb_id);
       if (!smb.vetted) {
@@ -416,6 +458,7 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
   // contract is immutable — this returns 409, which the verification checklist probes.
   router.patch('/engagements/:id/steps/:stepId', (req, res) => {
     const e = getEngagementOr404(req.params.id);
+    hard.requireParty(req, e);
     if (e.state !== 'draft') {
       throw new ApiError(409, `steps are locked: engagement is '${e.state}', not 'draft'`);
     }
@@ -436,6 +479,7 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
   // total active contract value may not exceed 5×stake + 50% of completed GMV.
   router.post('/engagements/:id/agree', (req, res) => {
     const e = getEngagementOr404(req.params.id);
+    hard.requireParty(req, e);
     const to = assertTransition(e, 'agree');
     if (pacta) {
       const cap = staking.exposureCapCents(db, e.smb_id);
@@ -448,12 +492,14 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
       }
     }
     setState(e.id, to);
+    hard.notifyProvider(e.id, 'engagement.agreed');
     res.json(engagementPublic(getEngagementOr404(e.id)));
   });
 
   // Agent funds the escrow with the upfront percentage.
-  router.post('/engagements/:id/fund', (req, res) => {
+  router.post('/engagements/:id/fund', hard.idempotent, (req, res) => {
     const e = getEngagementOr404(req.params.id);
+    hard.requireActor(req, 'agent', e.agent_id);
     const to = assertTransition(e, 'fund');
     const upfrontCents = Math.round((Number(e.price_cents) * Number(e.upfront_pct)) / 100);
     withTx(db, () => {
@@ -471,12 +517,14 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
       }
       setState(e.id, to);
     });
+    hard.notifyProvider(e.id, 'engagement.funded');
     res.json(engagementPublic(getEngagementOr404(e.id)));
   });
 
   // SMB marks a step complete with proof. Only after escrow is funded.
   router.post('/engagements/:id/steps/:stepId/complete', async (req, res) => {
     const e = getEngagementOr404(req.params.id);
+    hard.requireActor(req, 'smb', e.smb_id);
     if (!['funded', 'in_progress'].includes(e.state)) {
       throw new ApiError(409,
         e.state === 'agreed'
@@ -521,6 +569,7 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
   // SMB submits for verification — only when every step is done with proof.
   router.post('/engagements/:id/submit', (req, res) => {
     const e = getEngagementOr404(req.params.id);
+    hard.requireActor(req, 'smb', e.smb_id);
     if (!['funded', 'in_progress'].includes(e.state)) {
       throw new ApiError(409, `cannot submit an engagement in state '${e.state}'`);
     }
@@ -537,8 +586,9 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
   // Agent approves the proofs → settlement. One SQLite transaction draws the
   // remaining balance from the agent, releases the full escrow to the SMB, and
   // flips the state — so double release is structurally impossible.
-  router.post('/engagements/:id/approve', (req, res) => {
+  router.post('/engagements/:id/approve', hard.idempotent, (req, res) => {
     const e = getEngagementOr404(req.params.id);
+    hard.requireActor(req, 'agent', e.agent_id);
     const to = assertTransition(e, 'approve');
     withTx(db, () => {
       const agentAcct = getOrCreateAccount(db, 'agent', e.agent_id);
@@ -560,21 +610,25 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
       }
       setState(e.id, to);
     });
+    hard.notifyProvider(e.id, 'engagement.completed');
     res.json(engagementPublic(getEngagementOr404(e.id)));
   });
 
   // Agent rejects the proofs → dispute, held for the arbiter.
   router.post('/engagements/:id/reject', (req, res) => {
     const e = getEngagementOr404(req.params.id);
+    hard.requireActor(req, 'agent', e.agent_id);
     const to = assertTransition(e, 'reject');
     const body = requireBody(req, ['reason']);
     setState(e.id, to, { dispute_reason: String(body.reason) });
+    hard.notifyProvider(e.id, 'engagement.disputed');
     res.json(engagementPublic(getEngagementOr404(e.id)));
   });
 
   // Arbiter rules on a dispute. Applies to the escrowed funds only.
-  router.post('/engagements/:id/resolve', (req, res) => {
+  router.post('/engagements/:id/resolve', hard.idempotent, (req, res) => {
     const e = getEngagementOr404(req.params.id);
+    hard.requireArbiter(req);
     const to = assertTransition(e, 'resolve');
     const body = requireBody(req, ['ruling']);
     const ruling = String(body.ruling);
@@ -604,12 +658,14 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
       if (pacta) staking.slashForRuling(db, e, ruling);
       setState(e.id, to, { resolution: ruling });
     });
+    hard.notifyProvider(e.id, 'engagement.resolved');
     res.json(engagementPublic(getEngagementOr404(e.id)));
   });
 
   // Agent rates the SMB good/bad after settlement. One rating per engagement.
   router.post('/engagements/:id/rate', (req, res) => {
     const e = getEngagementOr404(req.params.id);
+    hard.requireActor(req, 'agent', e.agent_id);
     if (!['completed', 'resolved'].includes(e.state)) {
       throw new ApiError(409, `can only rate after settlement (state is '${e.state}')`);
     }
@@ -697,7 +753,8 @@ function createApiRouter(db, { pacta = false, registry = null } = {}) {
 
   // eslint-disable-next-line no-unused-vars
   router.use((err, req, res, next) => {
-    if (err instanceof ApiError || err instanceof LedgerError || err instanceof RegistryUnavailableError) {
+    if (err instanceof ApiError || err instanceof LedgerError
+        || err instanceof RegistryUnavailableError || err instanceof HardeningError) {
       return res.status(err.status).json({ error: err.message });
     }
     if (err.type === 'entity.parse.failed') {
