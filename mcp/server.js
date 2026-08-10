@@ -172,6 +172,20 @@ server.tool(
 );
 
 server.tool(
+  'get_agreement_proof',
+  'Full cryptographic receipt set for an engagement (ADR-001): every lifecycle event, hash-chained, signed by Pacta, with Merkle paths to publicly anchored roots. Store these receipts outside Pacta — they are what makes tampering provable.',
+  { engagement_id: z.number().int() },
+  wrap(async ({ engagement_id }) => api('GET', `/engagements/${engagement_id}/proof`)),
+);
+
+server.tool(
+  'verify_agreement_integrity',
+  'Verify a receipt: entry hash recomputation, platform signature, agreement hash + both party signatures, Merkle path to the anchored root. The server runs the checks AND returns everything needed to re-run them yourself with the open-source verifier — independent re-verification is the point.',
+  { receipt: z.record(z.any()).describe('One receipt object from get_agreement_proof (entry, merkle_proof, anchor, pacta_sig)') },
+  wrap(async ({ receipt }) => api('POST', '/verify', { receipt })),
+);
+
+server.tool(
   'get_my_balance',
   'Your current simulated USD balance.',
   {},

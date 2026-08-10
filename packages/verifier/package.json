@@ -1,0 +1,18 @@
+{
+  "name": "pacta-verify",
+  "version": "0.1.0",
+  "description": "Independent verifier for Pacta Phase 0 receipts: prove that agreement history is intact (or that it was tampered with) without Pacta's cooperation",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "lib.js",
+  "bin": {
+    "pacta-verify": "bin/pacta-verify.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.3.0",
+    "@noble/hashes": "^2.3.0"
+  }
+}

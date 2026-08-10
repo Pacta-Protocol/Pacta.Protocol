@@ -176,6 +176,35 @@ boundary), and each protection is one environment variable away:
   returns an HMAC secret; engagement state changes arrive signed
   (`X-Pacta-Signature`) instead of being polled for.
 
+## Cryptographic immutability (Phase 0)
+
+Nobody — including Pacta — can rewrite an agreement, a rating or a ruling
+without it being mathematically provable by receipt holders. The Certificate
+Transparency pattern applied to agreements
+([ADR-001](docs/adr/001-cryptographic-immutability.md)):
+
+- **Dual signatures**: agreeing canonicalizes the terms (RFC 8785), hashes
+  them — `agreement_hash` is the engagement's universal identity — and both
+  parties sign via EIP-712 (custodial keys are the disclosed launch default;
+  register your own key and the platform can no longer sign for you).
+- **Hash-chained event log**: every lifecycle mutation appends exactly one
+  entry, in the same transaction, to an append-only log where each entry
+  hashes its predecessor; database triggers forbid UPDATE/DELETE. Evidence
+  bytes and free text never enter the log — only hashes and metadata.
+- **Public anchoring**: a hybrid cadence (debounced batching + daily
+  heartbeat) publishes Merkle roots through an event-only, permissionless
+  ~10-line contract ([contracts/AnchorRegistry.sol](contracts/AnchorRegistry.sol)).
+  The default `local` adapter keeps demos and CI deterministic; the `rpc`
+  adapter sends real transactions to any EVM chain (`ANCHOR_RPC_URL`,
+  `ANCHOR_CONTRACT_ADDRESS`, `ANCHOR_SIGNER_KEY`).
+- **Receipts + open verifier**: both parties get signed receipts with Merkle
+  paths to anchored roots (`GET /api/engagements/{id}/proof`). The
+  [`pacta-verify`](packages/verifier) CLI re-implements every formula with
+  zero backend imports — anyone can prove history intact (or tampered)
+  without Pacta's cooperation; `/verify.html` runs the hash checks in the
+  browser. Custody of funds intentionally stays on the internal ledger
+  (Phase 1 is a designed, triggered roadmap item — see the ADR).
+
 ## Tests
 
 ```bash
@@ -219,7 +248,9 @@ the marketplace app.
 - [docs/API.md](docs/API.md) — REST API with curl examples ·
   [docs/DECISIONS.md](docs/DECISIONS.md) — design decisions and rationale ·
   [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — how to deploy
-- [docs/adr/001-cryptographic-immutability.md](docs/adr/001-cryptographic-immutability.md) - ADR-001: cryptographic agreement immutability (Phase 0)
+- [docs/adr/001-cryptographic-immutability.md](docs/adr/001-cryptographic-immutability.md) - ADR-001:
+  cryptographic agreement immutability (Phase 0) ·
+  [packages/verifier](packages/verifier) — the independent receipt verifier
 - [ROADMAP.md](ROADMAP.md) - where the protocol is going: real registry
   adapters, production hardening, settlement modules
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute ·

@@ -7,6 +7,12 @@ const {
 const staking = require('./staking');
 const { LocalRegistryAdapter, RegistryUnavailableError } = require('./registry');
 const { createHardening, HardeningError } = require('./hardening');
+// Phase 0 (ADR-001): cryptographic agreement immutability.
+const canonical = require('./canonical');
+const eip712 = require('./eip712');
+const keysmod = require('./keys');
+const eventlog = require('./eventlog');
+const receiptsmod = require('./receipts');
 
 class ApiError extends Error {
   constructor(status, message) {
@@ -148,12 +154,37 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
       agent: { id: Number(agent.id), name: agent.name },
       smb: { id: Number(smb.id), name: smb.name },
       escrow_balance_cents: escrow ? Number(escrow.balance_cents) : 0,
+      agreement_hash: e.agreement_hash || null,
+      signatures: e.agreement_hash ? { buyer: e.buyer_sig, provider: e.provider_sig } : null,
       steps,
       steps_done: steps.filter((s) => s.status === 'done').length,
       steps_total: steps.length,
       created_at: e.created_at,
       updated_at: e.updated_at,
     };
+  };
+
+  // Phase 0: the event-log key for an engagement is its agreement_hash;
+  // engagements that predate Phase 0 (or are still drafts) use a marker key.
+  const engagementKey = (e) => e.agreement_hash || `pre-phase0:${e.id}`;
+
+  // Append a lifecycle event (must run inside the mutation's transaction).
+  const logEvent = (e, type, payload) => eventlog.append(db, {
+    engagement: engagementKey(e), type, payload: { engagement_id: Number(e.id), ...payload },
+  });
+
+  // Launch default is custodial keys, created on first need and disclosed.
+  // A newly created key is itself a logged event.
+  const ensureKeyLogged = (kind, id) => {
+    const existing = keysmod.getKey(db, kind, id);
+    if (existing) return existing;
+    const key = keysmod.ensureCustodialKey(db, kind, id);
+    eventlog.append(db, {
+      engagement: 'platform',
+      type: 'KeyRegistered',
+      payload: { owner: `${kind === 'agent' ? 'agt' : 'smb'}_${id}`, pubkey: key.pubkey, custody: key.custody },
+    });
+    return key;
   };
 
   const assertTransition = (engagement, action) => {
@@ -262,6 +293,10 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
       getOrCreateAccount(db, 'smb', smbId);
       if (pacta && stakeCents > 0) {
         staking.depositStake(db, smbId, stakeCents, `initial stake for '${body.name}'`);
+        eventlog.append(db, {
+          engagement: 'platform', type: 'StakeChanged',
+          payload: { owner: `smb_${smbId}`, delta_cents: stakeCents, cause: 'deposit' },
+        });
       }
       return smbId;
     });
@@ -309,7 +344,13 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
     if (!Number.isInteger(amount) || amount <= 0) {
       throw new ApiError(400, 'amount_cents must be a positive integer');
     }
-    withTx(db, () => staking.depositStake(db, smb.id, amount, `stake top-up for '${smb.name}'`));
+    withTx(db, () => {
+      staking.depositStake(db, smb.id, amount, `stake top-up for '${smb.name}'`);
+      eventlog.append(db, {
+        engagement: 'platform', type: 'StakeChanged',
+        payload: { owner: `smb_${smb.id}`, delta_cents: amount, cause: 'deposit' },
+      });
+    });
     res.status(201).json(smbPublic(db.prepare('SELECT * FROM smbs WHERE id = ?').get(smb.id)));
   });
 
@@ -425,9 +466,9 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
 
     const id = withTx(db, () => {
       const info = db.prepare(
-        `INSERT INTO engagements (offer_id, agent_id, smb_id, title, price_cents, upfront_pct, state)
-         VALUES (?, ?, ?, ?, ?, ?, 'draft')`,
-      ).run(offer.id, agent.id, offer.smb_id, offer.title, offer.price_cents, offer.upfront_pct);
+        `INSERT INTO engagements (offer_id, agent_id, smb_id, title, price_cents, upfront_pct, state, nonce)
+         VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)`,
+      ).run(offer.id, agent.id, offer.smb_id, offer.title, offer.price_cents, offer.upfront_pct, canonical.newNonce());
       const engagementId = Number(info.lastInsertRowid);
       for (const s of offerSteps(offer.id)) {
         db.prepare(
@@ -475,6 +516,12 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
   });
 
   // Both parties agree → terms lock, contract becomes immutable.
+  // Phase 0 (ADR-001): locking now means signing. The terms are canonicalized
+  // (RFC 8785) and hashed; agreement_hash becomes the engagement's universal
+  // identity. Both parties sign the hash via EIP-712 — custodial keys sign
+  // server-side (disclosed launch default), self-custody parties send
+  // buyer_signature / provider_signature in the body. Both signatures are
+  // verified here, persisted, and recorded in the append-only event log.
   // Pacta: agreement is where the SMB's graduated exposure cap is enforced —
   // total active contract value may not exceed 5×stake + 50% of completed GMV.
   router.post('/engagements/:id/agree', (req, res) => {
@@ -491,9 +538,49 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
           `(currently ${fmt(active)}); adding ${fmt(Number(e.price_cents))} requires more stake or more completed work`);
       }
     }
-    setState(e.id, to);
+    const body = req.body || {};
+    const receipt = withTx(db, () => {
+      const buyerKey = ensureKeyLogged('agent', e.agent_id);
+      const providerKey = ensureKeyLogged('smb', e.smb_id);
+      if (!e.nonce) {
+        e.nonce = canonical.newNonce();
+        db.prepare('UPDATE engagements SET nonce = ? WHERE id = ?').run(e.nonce, e.id);
+      }
+      const steps = db.prepare('SELECT * FROM engagement_steps WHERE engagement_id = ? ORDER BY position').all(e.id);
+      const agreement = canonical.canonicalAgreement({
+        engagement: e, steps, buyerPubkey: buyerKey.pubkey, providerPubkey: providerKey.pubkey,
+      });
+      const hash = canonical.agreementHash(agreement);
+      const chainId = eip712.chainId();
+      const sigs = {};
+      for (const [role, key, provided] of [
+        ['buyer', buyerKey, body.buyer_signature],
+        ['provider', providerKey, body.provider_signature],
+      ]) {
+        const digest = eip712.agreementDigest({ agreementHash: hash, role, nonce: e.nonce, chainId });
+        const sig = provided ? String(provided) : keysmod.signAsParty(db, key, digest);
+        if (!eip712.verifyDigest(digest, sig, key.pubkey)) {
+          throw new ApiError(400, `invalid ${role} signature for agreement ${hash}`);
+        }
+        sigs[role] = sig;
+      }
+      db.prepare('UPDATE engagements SET agreement_hash = ?, buyer_sig = ?, provider_sig = ? WHERE id = ?')
+        .run(hash, sigs.buyer, sigs.provider, e.id);
+      setState(e.id, to);
+      return eventlog.append(db, {
+        engagement: hash,
+        type: 'AgreementLocked',
+        payload: {
+          engagement_id: Number(e.id),
+          agreement,
+          agreement_hash: hash,
+          signatures: sigs,
+          eip712_domain: { name: eip712.DOMAIN_NAME, version: eip712.DOMAIN_VERSION, chain_id: chainId },
+        },
+      });
+    });
     hard.notifyProvider(e.id, 'engagement.agreed');
-    res.json(engagementPublic(getEngagementOr404(e.id)));
+    res.json({ ...engagementPublic(getEngagementOr404(e.id)), receipt: receiptsmod.receiptForSeq(db, receipt.seq) });
   });
 
   // Agent funds the escrow with the upfront percentage.
@@ -516,6 +603,7 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
         });
       }
       setState(e.id, to);
+      logEvent(e, 'EscrowFunded', { amount_cents: upfrontCents, escrow_account: 'upfront' });
     });
     hard.notifyProvider(e.id, 'engagement.funded');
     res.json(engagementPublic(getEngagementOr404(e.id)));
@@ -562,6 +650,14 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
         "UPDATE engagement_steps SET status = 'done', proof_text = ?, proof_url = ?, proof_registry_ref = ?, proof_verified = ?, completed_at = datetime('now') WHERE id = ?",
       ).run(String(body.proof_text), body.proof_url ? String(body.proof_url) : null, registryRef, verified, step.id);
       if (e.state === 'funded') setState(e.id, 'in_progress');
+      // Evidence bytes never enter the log — only their hash and the registry
+      // reference that was independently verified.
+      logEvent(e, 'EvidenceSubmitted', {
+        step_n: Number(step.position),
+        proof_hash: canonical.hashOf({ text: String(body.proof_text), url: body.proof_url ? String(body.proof_url) : null }),
+        registry_ref: registryRef,
+        registry_verified: Boolean(verified),
+      });
     });
     res.json(engagementPublic(getEngagementOr404(e.id)));
   });
@@ -579,7 +675,10 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
       throw new ApiError(409,
         `cannot submit: ${incomplete.length} of ${steps.length} steps missing completion or proof`);
     }
-    setState(e.id, 'submitted');
+    withTx(db, () => {
+      setState(e.id, 'submitted');
+      logEvent(e, 'WorkSubmitted', { steps_total: steps.length });
+    });
     res.json(engagementPublic(getEngagementOr404(e.id)));
   });
 
@@ -609,6 +708,7 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
         });
       }
       setState(e.id, to);
+      logEvent(e, 'SettlementApproved', { remaining_drawn_cents: remaining, released_cents: escrowBalance });
     });
     hard.notifyProvider(e.id, 'engagement.completed');
     res.json(engagementPublic(getEngagementOr404(e.id)));
@@ -620,7 +720,10 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
     hard.requireActor(req, 'agent', e.agent_id);
     const to = assertTransition(e, 'reject');
     const body = requireBody(req, ['reason']);
-    setState(e.id, to, { dispute_reason: String(body.reason) });
+    withTx(db, () => {
+      setState(e.id, to, { dispute_reason: String(body.reason) });
+      logEvent(e, 'DisputeOpened', { reason_hash: canonical.hashOf(String(body.reason)) });
+    });
     hard.notifyProvider(e.id, 'engagement.disputed');
     res.json(engagementPublic(getEngagementOr404(e.id)));
   });
@@ -655,8 +758,12 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
         payout(agentAcct, agentShare, 'split_refund', `arbiter ruling: split — agent refund (engagement #${e.id})`);
       }
       // Pacta: an adverse ruling costs the SMB part of its stake (skin in the game).
-      if (pacta) staking.slashForRuling(db, e, ruling);
+      const slashed = pacta ? staking.slashForRuling(db, e, ruling) : 0;
       setState(e.id, to, { resolution: ruling });
+      logEvent(e, 'RulingIssued', { ruling, escrow_distributed_cents: held, stake_slashed_cents: slashed });
+      if (slashed > 0) {
+        logEvent(e, 'StakeChanged', { owner: `smb_${e.smb_id}`, delta_cents: -slashed, cause: 'slash' });
+      }
     });
     hard.notifyProvider(e.id, 'engagement.resolved');
     res.json(engagementPublic(getEngagementOr404(e.id)));
@@ -674,8 +781,11 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
     if (!['good', 'bad'].includes(value)) throw new ApiError(400, "value must be 'good' or 'bad'");
     const existing = db.prepare('SELECT id FROM ratings WHERE engagement_id = ?').get(e.id);
     if (existing) throw new ApiError(409, 'this engagement has already been rated');
-    db.prepare('INSERT INTO ratings (engagement_id, smb_id, agent_id, value) VALUES (?, ?, ?, ?)')
-      .run(e.id, e.smb_id, e.agent_id, value);
+    withTx(db, () => {
+      db.prepare('INSERT INTO ratings (engagement_id, smb_id, agent_id, value) VALUES (?, ?, ?, ?)')
+        .run(e.id, e.smb_id, e.agent_id, value);
+      logEvent(e, 'RatingSubmitted', { value });
+    });
     res.status(201).json(engagementPublic(getEngagementOr404(e.id)));
   });
 
@@ -709,9 +819,145 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
         { name: 'reject', method: 'POST', path: '/api/engagements/{id}/reject', params: { reason: 'string' }, description: 'Open a dispute for the arbiter.' },
         { name: 'rate', method: 'POST', path: '/api/engagements/{id}/rate', params: { value: 'good|bad' }, description: 'Rate the SMB after settlement; feeds search ranking.' },
         { name: 'registry_lookup', method: 'GET', path: '/api/registry/{ref}', description: 'Verify a proof reference against the public registry (Pacta).' },
+        { name: 'get_agreement_proof', method: 'GET', path: '/api/engagements/{id}/proof', description: 'Full receipt set: signed, hash-chained events with Merkle paths to anchored roots (ADR-001).' },
+        { name: 'verify_agreement_integrity', method: 'POST', path: '/api/verify', params: { receipt: 'object' }, description: 'Server-side receipt verification, plus the data to re-verify independently with the open verifier.' },
       ],
     });
   });
+
+  // ---------- Phase 0: proofs, receipts, integrity -----------------------------
+
+  // What exactly would I be signing? The canonical agreement, its hash and the
+  // EIP-712 digests for both roles — the self-custody flow: register a key
+  // (POST /{kind}s/{id}/signing-key), preview, sign the digest with your own
+  // key, send the signature to /agree. Read-only: parties without registered
+  // keys are told to register (or to rely on the disclosed custodial default).
+  router.get('/engagements/:id/agreement-preview', (req, res) => {
+    const e = getEngagementOr404(req.params.id);
+    if (e.state !== 'draft') throw new ApiError(409, `agreement preview is for drafts; this engagement is '${e.state}'`);
+    if (!e.nonce) throw new ApiError(409, 'this engagement predates Phase 0 and has no nonce yet; agreeing will assign one');
+    const buyerKey = keysmod.getKey(db, 'agent', e.agent_id);
+    const providerKey = keysmod.getKey(db, 'smb', e.smb_id);
+    if (!buyerKey || !providerKey) {
+      throw new ApiError(409,
+        'both parties need a registered signing key to preview: POST /{kind}s/{id}/signing-key, '
+        + 'or just call /agree to use the disclosed custodial default');
+    }
+    const steps = db.prepare('SELECT * FROM engagement_steps WHERE engagement_id = ? ORDER BY position').all(e.id);
+    const agreement = canonical.canonicalAgreement({
+      engagement: e, steps, buyerPubkey: buyerKey.pubkey, providerPubkey: providerKey.pubkey,
+    });
+    const hash = canonical.agreementHash(agreement);
+    const chainId = eip712.chainId();
+    const digest = (role) => `0x${Buffer.from(
+      eip712.agreementDigest({ agreementHash: hash, role, nonce: e.nonce, chainId }),
+    ).toString('hex')}`;
+    res.json({
+      engagement_id: Number(e.id),
+      agreement,
+      agreement_hash: hash,
+      eip712_domain: { name: eip712.DOMAIN_NAME, version: eip712.DOMAIN_VERSION, chain_id: chainId },
+      signing_digests: { buyer: digest('buyer'), provider: digest('provider') },
+    });
+  });
+
+  // Full receipt set for an engagement: every log entry that concerns it, with
+  // Pacta's signature and (once anchored) the Merkle path to a public root.
+  // This is what a party stores outside Pacta to make tampering provable.
+  router.get('/engagements/:id/proof', (req, res) => {
+    const e = getEngagementOr404(req.params.id);
+    const key = engagementKey(e);
+    res.json({
+      engagement_id: Number(e.id),
+      agreement_hash: e.agreement_hash || null,
+      pre_phase0: !e.agreement_hash,
+      eip712_domain: { name: eip712.DOMAIN_NAME, version: eip712.DOMAIN_VERSION, chain_id: eip712.chainId() },
+      platform_pubkey: keysmod.platformPubkey(),
+      receipts: receiptsmod.engagementReceipts(db, key),
+    });
+  });
+
+  // Server-side convenience verification of a receipt. The response says it
+  // plainly: do not trust this endpoint — the point of Phase 0 is that anyone
+  // can re-run the same checks with the open verifier, offline, against any
+  // RPC node, without Pacta's cooperation.
+  router.post('/verify', (req, res) => {
+    const receipt = (req.body || {}).receipt;
+    if (!receipt || typeof receipt !== 'object' || !receipt.entry) {
+      throw new ApiError(400, 'body must be { receipt: { entry, merkle_proof, anchor, pacta_sig } }');
+    }
+    // The verifier package reimplements every formula independently of this
+    // backend (that is its contract); the server merely runs it for convenience.
+    const { verifyReceipt } = require('../packages/verifier/lib');
+    const result = verifyReceipt(receipt, {
+      platformPubkey: keysmod.platformPubkey(),
+      chainId: eip712.chainId(),
+    });
+    res.json({
+      ...result,
+      independent_verification:
+        'Do not take this response as proof: re-run these checks yourself with the open-source '
+        + 'verifier (packages/verifier — `pacta-verify receipt.json`), which needs no Pacta backend '
+        + 'or credentials. Independent re-verification is the point.',
+    });
+  });
+
+  // Public integrity status: replay the whole hash chain and report anchoring.
+  // Additive read-only route (GOVERNANCE carve-out).
+  router.get('/integrity', (req, res) => {
+    const replayed = eventlog.replay(db);
+    const lastAnchor = db.prepare('SELECT * FROM anchors ORDER BY id DESC LIMIT 1').get();
+    res.json({
+      chain: replayed,
+      entries: replayed.checked,
+      last_anchor: lastAnchor ? {
+        root: lastAnchor.root,
+        from_seq: Number(lastAnchor.from_seq),
+        to_seq: Number(lastAnchor.to_seq),
+        chain_id: Number(lastAnchor.chain_id),
+        tx_hash: lastAnchor.tx_hash,
+        heartbeat: Boolean(lastAnchor.heartbeat),
+        at: lastAnchor.created_at,
+      } : null,
+      platform: {
+        pubkey: keysmod.platformPubkey(),
+        anchor_sender: eip712.addressOf(keysmod.platformPubkey()),
+        eip712_domain: { name: eip712.DOMAIN_NAME, version: eip712.DOMAIN_VERSION, chain_id: eip712.chainId() },
+      },
+    });
+  });
+
+  // Pacta's published platform pubkey — what receipt verifiers check pacta_sig
+  // against.
+  router.get('/keys/platform', (req, res) => {
+    res.json({
+      pubkey: keysmod.platformPubkey(),
+      address: eip712.addressOf(keysmod.platformPubkey()),
+      eip712_domain: { name: eip712.DOMAIN_NAME, version: eip712.DOMAIN_VERSION, chain_id: eip712.chainId() },
+    });
+  });
+
+  // Register a self-custody signing key (or rotate to one). Custodial keys
+  // are created automatically at first signature; this is the upgrade path.
+  for (const kind of ['agent', 'smb']) {
+    router.post(`/${kind}s/:id/signing-key`, (req, res) => {
+      const row = db.prepare(`SELECT id FROM ${kind}s WHERE id = ?`).get(req.params.id);
+      if (!row) throw new ApiError(404, `${kind} not found`);
+      hard.requireActor(req, kind, row.id);
+      const body = requireBody(req, ['pubkey']);
+      const key = withTx(db, () => {
+        const saved = keysmod.registerKey(db, kind, Number(row.id), { pubkey: String(body.pubkey), custody: 'self' });
+        eventlog.append(db, {
+          engagement: 'platform', type: 'KeyRegistered',
+          payload: { owner: `${kind === 'agent' ? 'agt' : 'smb'}_${row.id}`, pubkey: saved.pubkey, custody: 'self' },
+        });
+        return saved;
+      });
+      res.status(201).json({
+        [`${kind}_id`]: Number(row.id), pubkey: key.pubkey, custody: key.custody,
+      });
+    });
+  }
 
   // ---------- disputes / ledger ------------------------------------------------
 
@@ -754,7 +1000,8 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
   // eslint-disable-next-line no-unused-vars
   router.use((err, req, res, next) => {
     if (err instanceof ApiError || err instanceof LedgerError
-        || err instanceof RegistryUnavailableError || err instanceof HardeningError) {
+        || err instanceof RegistryUnavailableError || err instanceof HardeningError
+        || err instanceof keysmod.KeyError) {
       return res.status(err.status).json({ error: err.message });
     }
     if (err.type === 'entity.parse.failed') {

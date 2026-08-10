@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pacta — Verify a receipt</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    h1 { font-size: 1.4rem; }
+    textarea { width: 100%; min-height: 220px; font-family: ui-monospace, monospace; font-size: .8rem; }
+    button { padding: .5rem 1.2rem; font-size: 1rem; cursor: pointer; }
+    .check { padding: .35rem .6rem; border-left: 4px solid #999; margin: .35rem 0; font-family: ui-monospace, monospace; font-size: .85rem; white-space: pre-wrap; }
+    .PASS { border-color: #2e9e5b; } .FAIL { border-color: #cc3344; } .SKIP { border-color: #b9a23c; }
+    .verdict { font-weight: 700; margin-top: 1rem; }
+    .note { font-size: .85rem; opacity: .8; }
+  </style>
+</head>
+<body>
+  <h1>Verify a Pacta receipt — in your browser, no server round-trip</h1>
+  <p>Paste a receipt (or the full bundle from <code>GET /api/engagements/:id/proof</code>).
+  All hash checks below run <strong>entirely client-side</strong> in this page: the entry hash chain,
+  the agreement hash, and the Merkle path to the anchored root. Nothing you paste is sent anywhere.</p>
+  <p class="note">EIP-712 signature checks and the on-chain anchor lookup need secp256k1/keccak and an
+  RPC node, which this dependency-free page does not ship: run the open-source CLI for the complete
+  set — <code>pacta-verify receipt.json --rpc &lt;url&gt;</code> (see <code>packages/verifier</code>).
+  Detecting tampered history does not require signatures: any alteration already breaks the
+  hash checks on this page.</p>
+  <textarea id="input" placeholder='{ "entry": { ... }, "merkle_proof": [...], "anchor": {...}, "pacta_sig": "0x…" }'></textarea>
+  <p><button id="run">Verify</button></p>
+  <div id="out"></div>
+
+<script>
+'use strict';
+// Independent reimplementation of the Phase 0 formulas (see packages/verifier
+// for the canonical documentation). Deliberately imports nothing.
+const enc = new TextEncoder();
+const strip0x = (h) => String(h).startsWith('0x') ? String(h).slice(2) : String(h);
+const hexToBytes = (hex) => Uint8Array.from(strip0x(hex).match(/.{2}/g).map((b) => parseInt(b, 16)));
+const bytesToHex = (b) => '0x' + [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('');
+async function sha256(...parts) {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { buf.set(p, off); off += p.length; }
+  return bytesToHex(await crypto.subtle.digest('SHA-256', buf));
+}
+
+// RFC 8785 (JCS) for the protocol's value space.
+function canonicalize(v) {
+  if (v === null || typeof v === 'boolean' || typeof v === 'string') return JSON.stringify(v);
+  if (typeof v === 'number') { if (!Number.isFinite(v)) throw new Error('non-finite'); return JSON.stringify(v); }
+  if (Array.isArray(v)) return '[' + v.map(canonicalize).join(',') + ']';
+  if (typeof v === 'object') {
+    const keys = Object.keys(v).filter((k) => v[k] !== undefined).sort();
+    return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalize(v[k])).join(',') + '}';
+  }
+  throw new Error('cannot canonicalize ' + typeof v);
+}
+
+const entryHashOf = (prev, e) => sha256(enc.encode(prev), enc.encode(canonicalize(
+  { seq: e.seq, engagement: e.engagement, type: e.type, payload: e.payload, at: e.at })));
+
+async function verifyOne(receipt) {
+  const checks = [];
+  const push = (name, status, detail) => checks.push({ name, status, detail });
+  const entry = receipt.entry || {};
+  try {
+    const recomputed = await entryHashOf(entry.prev_hash, entry);
+    push('entry_hash', recomputed === entry.entry_hash ? 'PASS' : 'FAIL',
+      recomputed === entry.entry_hash ? 'entry hash recomputes identically'
+        : 'recomputed ' + recomputed + ' ≠ stored ' + entry.entry_hash + ' — the entry was altered');
+  } catch (err) { push('entry_hash', 'FAIL', 'cannot recompute: ' + err.message); }
+
+  if (entry.type === 'AgreementLocked' && entry.payload && entry.payload.agreement) {
+    const recomputed = await sha256(enc.encode(canonicalize(entry.payload.agreement)));
+    const claimed = entry.payload.agreement_hash;
+    push('agreement_hash', recomputed === claimed ? 'PASS' : 'FAIL',
+      recomputed === claimed ? 'agreement terms hash to the claimed identity'
+        : 'terms hash to ' + recomputed + ', not ' + claimed + ' — terms were altered');
+  }
+
+  if (receipt.merkle_proof && receipt.anchor) {
+    let acc = entry.entry_hash;
+    for (const step of receipt.merkle_proof) {
+      acc = step.pos === 'right'
+        ? await sha256(hexToBytes(acc), hexToBytes(step.hash))
+        : await sha256(hexToBytes(step.hash), hexToBytes(acc));
+    }
+    push('merkle_proof', acc === receipt.anchor.root ? 'PASS' : 'FAIL',
+      acc === receipt.anchor.root ? 'Merkle path reaches the anchored root'
+        : 'path reaches ' + acc + ' ≠ anchor root ' + receipt.anchor.root);
+    push('anchor_on_chain', 'SKIP', Number(receipt.anchor.chain_id) === 0
+      ? 'chain_id 0 is a simulated local anchor'
+      : 'confirm on chain with: pacta-verify receipt.json --rpc <url>');
+  } else {
+    push('merkle_proof', 'SKIP', 'not yet covered by an anchor');
+  }
+  push('signatures', 'SKIP', 'EIP-712 checks run in the CLI: pacta-verify receipt.json');
+  return checks;
+}
+
+document.getElementById('run').addEventListener('click', async () => {
+  const out = document.getElementById('out');
+  out.innerHTML = '';
+  let doc;
+  try { doc = JSON.parse(document.getElementById('input').value); }
+  catch { out.textContent = 'That is not valid JSON.'; return; }
+  const receipts = Array.isArray(doc.receipts) ? doc.receipts : [doc];
+  let allPass = true;
+  for (const r of receipts) {
+    const h = document.createElement('div');
+    h.textContent = 'receipt seq=' + (r.entry && r.entry.seq) + ' (' + (r.entry && r.entry.type) + ')';
+    h.style.fontWeight = '600'; h.style.marginTop = '.8rem';
+    out.appendChild(h);
+    for (const c of await verifyOne(r)) {
+      if (c.status === 'FAIL') allPass = false;
+      const div = document.createElement('div');
+      div.className = 'check ' + c.status;
+      div.textContent = c.status + '  ' + c.name + ' — ' + c.detail;
+      out.appendChild(div);
+    }
+  }
+  const verdict = document.createElement('p');
+  verdict.className = 'verdict';
+  verdict.textContent = allPass
+    ? 'PASS — the pasted history is intact (hash checks).'
+    : 'FAIL — this receipt proves tampering or is malformed.';
+  out.appendChild(verdict);
+});
+</script>
+</body>
+</html>

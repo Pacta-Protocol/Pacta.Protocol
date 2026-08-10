@@ -57,6 +57,11 @@ tags:
     description: Public-registry lookups used to verify proofs. [Pacta]
   - name: ledger
     description: Accounts, transaction journal and the ledger invariant.
+  - name: integrity
+    description: >-
+      Phase 0 (ADR-001) - cryptographic agreement immutability: signing keys,
+      receipts with Merkle proofs to publicly anchored roots, and independent
+      verification.
 
 paths:
   /config:
@@ -617,17 +622,45 @@ paths:
       tags: [engagements]
       summary: 'Lock the contract (draft -> agreed)'
       description: |
-        Terms and steps become immutable. **[Pacta]**: fails `409` if the SMB's
+        Terms and steps become immutable. Locking now means **signing**
+        (ADR-001): the terms are canonicalized (RFC 8785) and hashed
+        (`agreement_hash`, the engagement's universal identity), and both
+        parties sign the hash via EIP-712. Parties with custodial keys
+        (disclosed launch default) are signed for server-side; self-custody
+        parties must send `buyer_signature` / `provider_signature` (see
+        `GET /engagements/{id}/agreement-preview`). Both signatures are
+        verified, persisted, and recorded in the append-only event log; the
+        response carries the `AgreementLocked` receipt.
+        **[Pacta]**: fails `409` if the SMB's
         active exposure plus this price would exceed its exposure cap
         (5 x stake + 50% of completed GMV); the message includes the exact amounts.
       parameters:
         - $ref: '#/components/parameters/idParam'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                buyer_signature:
+                  type: string
+                  description: EIP-712 signature (r||s||v hex) by the buyer's self-custody key.
+                provider_signature:
+                  type: string
+                  description: EIP-712 signature (r||s||v hex) by the provider's self-custody key.
       responses:
         '200':
-          description: The agreed engagement.
+          description: The agreed engagement, with its `AgreementLocked` receipt.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Engagement' }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Engagement'
+                  - type: object
+                    properties:
+                      receipt: { $ref: '#/components/schemas/Receipt' }
+        '400': { $ref: '#/components/responses/Validation' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
@@ -895,6 +928,250 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Invariant' }
 
+  /engagements/{id}/agreement-preview:
+    get:
+      operationId: previewAgreement
+      tags: [integrity]
+      summary: What exactly would I be signing?
+      description: |
+        The canonical agreement (RFC 8785), its `agreement_hash`, and the
+        EIP-712 signing digests for both roles. The self-custody flow: register
+        a key (`POST /{kind}s/{id}/signing-key`), preview, sign the digest with
+        your own key, send the signature to `/agree`. Drafts only; both parties
+        must have registered keys (custodial-default parties can skip straight
+        to `/agree`).
+      parameters:
+        - $ref: '#/components/parameters/idParam'
+      responses:
+        '200':
+          description: Canonical agreement, hash and signing digests.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engagement_id: { type: integer }
+                  agreement:
+                    type: object
+                    description: The canonical agreement object (schema pacta/agreement@1). No unhashed free text.
+                  agreement_hash: { type: string }
+                  eip712_domain: { $ref: '#/components/schemas/Eip712Domain' }
+                  signing_digests:
+                    type: object
+                    properties:
+                      buyer: { type: string }
+                      provider: { type: string }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /engagements/{id}/proof:
+    get:
+      operationId: getAgreementProof
+      tags: [integrity]
+      summary: Full receipt set for an engagement (ADR-001)
+      description: |
+        Every event-log entry that concerns this engagement, each with Pacta's
+        EIP-712 signature over its `entry_hash` and - once a covering anchor
+        lands - the Merkle inclusion proof to the publicly anchored root.
+        Store these receipts outside Pacta: they are what makes tampering
+        provable without Pacta's cooperation. Engagements that predate Phase 0
+        report `pre_phase0: true` and an empty receipt set (no backfilling, by
+        decision).
+      parameters:
+        - $ref: '#/components/parameters/idParam'
+      responses:
+        '200':
+          description: The receipt bundle.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  engagement_id: { type: integer }
+                  agreement_hash: { type: [string, 'null'] }
+                  pre_phase0: { type: boolean }
+                  eip712_domain: { $ref: '#/components/schemas/Eip712Domain' }
+                  platform_pubkey: { type: string }
+                  receipts:
+                    type: array
+                    items: { $ref: '#/components/schemas/Receipt' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /verify:
+    post:
+      operationId: verifyReceipt
+      tags: [integrity]
+      summary: Server-side receipt verification (convenience only)
+      description: |
+        Runs the open verifier's offline checks on one receipt: entry-hash
+        recomputation, platform signature, agreement hash + both party
+        signatures (for `AgreementLocked`), Merkle path to the anchored root.
+        The response says it plainly: do not take this endpoint's word for it -
+        re-run the same checks with the open-source verifier
+        (`packages/verifier`, `pacta-verify receipt.json`), offline, against
+        any RPC node. Independent re-verification is the point.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [receipt]
+              properties:
+                receipt: { $ref: '#/components/schemas/Receipt' }
+      responses:
+        '200':
+          description: Check-by-check result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pass: { type: boolean }
+                  checks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        status: { type: string, enum: [PASS, FAIL, SKIP] }
+                        detail: { type: string }
+                  independent_verification: { type: string }
+        '400': { $ref: '#/components/responses/Validation' }
+
+  /integrity:
+    get:
+      operationId: getIntegrity
+      tags: [integrity]
+      summary: Replay the whole hash chain and report anchoring status
+      description: |
+        Recomputes every `entry_hash` from genesis and compares with the stored
+        chain, and reports the last anchor and the platform's signing identity.
+        Public and read-only.
+      responses:
+        '200':
+          description: Chain replay result, last anchor, platform identity.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chain:
+                    type: object
+                    properties:
+                      ok: { type: boolean }
+                      checked: { type: integer }
+                      broken_at: { type: [integer, 'null'] }
+                      reason: { type: [string, 'null'] }
+                  entries: { type: integer }
+                  last_anchor:
+                    type: [object, 'null']
+                    properties:
+                      root: { type: string }
+                      from_seq: { type: integer }
+                      to_seq: { type: integer }
+                      chain_id: { type: integer }
+                      tx_hash: { type: string }
+                      heartbeat: { type: boolean }
+                      at: { type: string }
+                  platform:
+                    type: object
+                    properties:
+                      pubkey: { type: string }
+                      anchor_sender: { type: string }
+                      eip712_domain: { $ref: '#/components/schemas/Eip712Domain' }
+
+  /keys/platform:
+    get:
+      operationId: getPlatformKey
+      tags: [integrity]
+      summary: Pacta's published signing pubkey
+      description: >-
+        What receipt verifiers check `pacta_sig` against, plus the address that
+        sends anchor transactions and the EIP-712 domain.
+      responses:
+        '200':
+          description: Platform signing identity.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pubkey: { type: string }
+                  address: { type: string }
+                  eip712_domain: { $ref: '#/components/schemas/Eip712Domain' }
+
+  /agents/{id}/signing-key:
+    post:
+      operationId: registerAgentSigningKey
+      tags: [integrity]
+      summary: Register (or rotate to) a self-custody signing key
+      description: |
+        Registers the agent's own uncompressed secp256k1 pubkey. From then on
+        the platform cannot sign for this party: `/agree` requires its
+        signature. Custodial keys (the disclosed launch default) are created
+        automatically at first signature; this is the upgrade path, and the
+        registration itself is a logged event.
+      parameters:
+        - $ref: '#/components/parameters/idParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pubkey]
+              properties:
+                pubkey:
+                  type: string
+                  description: Uncompressed secp256k1 public key (0x04 + 128 hex chars).
+      responses:
+        '201':
+          description: The registered key.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id: { type: integer }
+                  pubkey: { type: string }
+                  custody: { type: string, enum: [self] }
+        '400': { $ref: '#/components/responses/Validation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /smbs/{id}/signing-key:
+    post:
+      operationId: registerSmbSigningKey
+      tags: [integrity]
+      summary: Register (or rotate to) a self-custody signing key (SMB)
+      description: Same contract as the agent variant, for the provider side.
+      parameters:
+        - $ref: '#/components/parameters/idParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pubkey]
+              properties:
+                pubkey:
+                  type: string
+                  description: Uncompressed secp256k1 public key (0x04 + 128 hex chars).
+      responses:
+        '201':
+          description: The registered key.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  smb_id: { type: integer }
+                  pubkey: { type: string }
+                  custody: { type: string, enum: [self] }
+        '400': { $ref: '#/components/responses/Validation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   parameters:
     idParam:
@@ -1086,6 +1363,18 @@ components:
             id: { type: integer }
             name: { type: string }
         escrow_balance_cents: { type: integer }
+        agreement_hash:
+          type: [string, 'null']
+          description: >-
+            SHA-256 of the canonical (RFC 8785) agreement terms - the
+            engagement's universal identity once agreed (ADR-001). Null for
+            drafts and pre-phase0 engagements.
+        signatures:
+          type: [object, 'null']
+          description: EIP-712 signatures over agreement_hash (r||s||v hex).
+          properties:
+            buyer: { type: string }
+            provider: { type: string }
         steps:
           type: array
           items: { $ref: '#/components/schemas/EngagementStep' }
@@ -1093,6 +1382,68 @@ components:
         steps_total: { type: integer }
         created_at: { type: string }
         updated_at: { type: string }
+
+    Eip712Domain:
+      type: object
+      description: 'The EIP-712 signing domain: { name: "Pacta", version: "1", chainId }.'
+      properties:
+        name: { type: string }
+        version: { type: string }
+        chain_id: { type: integer }
+
+    Receipt:
+      type: object
+      description: |
+        The portable proof object a party stores outside Pacta (ADR-001).
+        `entry` is one hash-chained event-log record; `pacta_sig` is Pacta's
+        EIP-712 signature over `entry_hash`; `merkle_proof` and `anchor` are
+        null until a covering anchor lands on the public chain, then backfilled
+        on read. Verifiable offline with the open-source verifier
+        (packages/verifier).
+      required: [entry, merkle_proof, anchor, pacta_sig]
+      properties:
+        entry:
+          type: object
+          required: [seq, engagement, type, payload, at, prev_hash, entry_hash]
+          properties:
+            seq: { type: integer }
+            engagement:
+              type: string
+              description: The agreement_hash, 'platform', or 'pre-phase0:<id>'.
+            type:
+              type: string
+              description: >-
+                KeyRegistered | AgreementLocked | EscrowFunded |
+                EvidenceSubmitted | WorkSubmitted | SettlementApproved |
+                DisputeOpened | RulingIssued | StakeChanged | RatingSubmitted.
+            payload:
+              type: object
+              description: Hashes and metadata only - evidence bytes and free text never enter the log.
+            at: { type: string }
+            prev_hash: { type: string }
+            entry_hash:
+              type: string
+              description: SHA-256(prev_hash || canonical entry) - the chain link.
+        merkle_proof:
+          type: [array, 'null']
+          items:
+            type: object
+            properties:
+              hash: { type: string }
+              pos: { type: string, enum: [left, right] }
+        anchor:
+          type: [object, 'null']
+          properties:
+            root: { type: string }
+            from_seq: { type: integer }
+            to_seq: { type: integer }
+            chain_id:
+              type: integer
+              description: 0 marks a simulated local-development anchor.
+            tx_hash: { type: string }
+            block_number: { type: [integer, 'null'] }
+            block_time: { type: [string, 'null'] }
+        pacta_sig: { type: [string, 'null'] }
 
     RegistryRecord:
       type: object

@@ -130,6 +130,78 @@ CREATE TABLE IF NOT EXISTS ratings (
   value TEXT NOT NULL CHECK (value IN ('good','bad')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Phase 0 (ADR-001): signing keys for agreement signatures. Custody 'custodial'
+-- means the platform holds the private key on the owner's behalf (disclosed;
+-- launch default for SMBs); 'self' keys never store a private key here. The
+-- platform's own signing key lives in PLATFORM_SIGNING_KEY, not in this table.
+CREATE TABLE IF NOT EXISTS signing_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('agent','smb')),
+  owner_id INTEGER NOT NULL,
+  pubkey TEXT NOT NULL,
+  custody TEXT NOT NULL CHECK (custody IN ('self','custodial')),
+  privkey TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (owner_kind, owner_id)
+);
+
+-- Phase 0 (ADR-001): hash-chained append-only event log. Every lifecycle
+-- mutation appends exactly one entry in the same transaction as the state
+-- change. payload holds hashes and metadata only — evidence bytes and free
+-- text never enter the log. UPDATE and DELETE are forbidden by triggers.
+CREATE TABLE IF NOT EXISTS event_log (
+  seq INTEGER PRIMARY KEY,
+  engagement TEXT NOT NULL,
+  type TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  at TEXT NOT NULL,
+  prev_hash TEXT NOT NULL,
+  entry_hash TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS event_log_no_update
+BEFORE UPDATE ON event_log
+BEGIN SELECT RAISE(ABORT, 'event_log is append-only: UPDATE forbidden'); END;
+CREATE TRIGGER IF NOT EXISTS event_log_no_delete
+BEFORE DELETE ON event_log
+BEGIN SELECT RAISE(ABORT, 'event_log is append-only: DELETE forbidden'); END;
+
+-- Phase 0: Pacta's EIP-712 signature over each entry_hash, the core of the
+-- receipt handed to both parties. Kept out of event_log so the chained bytes
+-- stay exactly what the verifier recomputes.
+CREATE TABLE IF NOT EXISTS receipt_sigs (
+  seq INTEGER PRIMARY KEY REFERENCES event_log(seq),
+  pacta_sig TEXT NOT NULL
+);
+
+-- Phase 0: Merkle roots of the event log anchored to a public chain.
+-- heartbeat=1 rows re-anchor the previous root as a liveness signal
+-- (from_seq == to_seq == last anchored seq); they carry no new proofs.
+CREATE TABLE IF NOT EXISTS anchors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  root TEXT NOT NULL,
+  from_seq INTEGER NOT NULL,
+  to_seq INTEGER NOT NULL,
+  chain_id INTEGER NOT NULL,
+  tx_hash TEXT NOT NULL,
+  block_number INTEGER,
+  block_time TEXT,
+  heartbeat INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Phase 0: the simulated chain behind the 'local' anchor adapter — keeps the
+-- demo and CI deterministic with no RPC. The 'rpc' adapter replaces this with
+-- a real AnchorRegistry contract on an L2 (see contracts/AnchorRegistry.sol).
+CREATE TABLE IF NOT EXISTS local_chain (
+  block_number INTEGER PRIMARY KEY AUTOINCREMENT,
+  root TEXT NOT NULL,
+  from_seq INTEGER NOT NULL,
+  to_seq INTEGER NOT NULL,
+  sender TEXT NOT NULL,
+  tx_hash TEXT NOT NULL,
+  block_time TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;
 
 function openDb(dbPath) {
@@ -155,6 +227,13 @@ function migrate(db) {
     "ALTER TABLE smbs ADD COLUMN api_key_hash TEXT",
     "ALTER TABLE smbs ADD COLUMN webhook_url TEXT",
     "ALTER TABLE smbs ADD COLUMN webhook_secret TEXT",
+    // Phase 0: agreement identity + dual signatures. Engagements that settled
+    // before Phase 0 keep these NULL and are treated as pre-phase0 (no
+    // backfilled signatures, by decision — see ADR-001).
+    "ALTER TABLE engagements ADD COLUMN nonce TEXT",
+    "ALTER TABLE engagements ADD COLUMN agreement_hash TEXT",
+    "ALTER TABLE engagements ADD COLUMN buyer_sig TEXT",
+    "ALTER TABLE engagements ADD COLUMN provider_sig TEXT",
   ];
   for (const sql of alters) {
     try { db.exec(sql); } catch { /* column already exists */ }
