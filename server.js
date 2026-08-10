@@ -4,11 +4,18 @@ const { createApp } = require('./src/app');
 // 3210 by default: the usual dev ports (3000, 5173, 8080) are frequently occupied
 // by leftover dev servers, which makes "clone and run" flaky. Override with PORT.
 const PORT = Number(process.env.PORT || 3210);
-const { app, seeded } = createApp();
+const { app, db, seeded } = createApp();
+
+// Phase 0 (ADR-001): anchor event-log Merkle roots on a hybrid cadence.
+// ANCHOR_AUTOSTART=0 disables (e.g. when running a standalone worker).
+const { createAnchorWorker } = require('./src/anchor');
+const anchorWorker = process.env.ANCHOR_AUTOSTART === '0' ? null : createAnchorWorker(db, {});
+if (anchorWorker) anchorWorker.start();
 
 const server = app.listen(PORT, () => {
   console.log(`Pacta (Agent Services Marketplace) POC running at http://localhost:${PORT}`);
   if (seeded) console.log('Seed data loaded (fresh database).');
+  if (anchorWorker) console.log(`Anchor worker on (adapter: ${anchorWorker.adapter.name}).`);
 });
 
 server.on('error', (err) => {

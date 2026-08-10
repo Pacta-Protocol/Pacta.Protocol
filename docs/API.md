@@ -181,13 +181,50 @@ arbiter rulings slash the stake (`refund` 20%, `split` 10% of price, bounded by 
 stake) and auto-revoke the badge at zero · SMB payloads include `stake_cents`,
 `exposure_cap_cents`, `active_exposure_cents`.
 
+## Cryptographic immutability (Phase 0, ADR-001)
+
+Locking a contract now means signing it: `agree` canonicalizes the terms
+(RFC 8785), hashes them (`agreement_hash` — the engagement's universal
+identity) and requires both parties' EIP-712 signatures (custodial keys sign
+server-side, the disclosed launch default). Every lifecycle mutation appends
+one entry to a hash-chained, trigger-protected, append-only event log, and
+each party gets signed receipts with Merkle proofs to publicly anchored roots.
+
+```bash
+curl -s http://localhost:3220/api/integrity                 # replay the whole chain + last anchor
+curl -s http://localhost:3220/api/keys/platform             # Pacta's published signing pubkey
+curl -s http://localhost:3220/api/engagements/1/proof       # full receipt set (store it outside Pacta!)
+curl -s http://localhost:3220/api/engagements/1/agreement-preview  # what exactly would I sign?
+
+# Self-custody upgrade: register your own secp256k1 key, then sign the
+# preview digests yourself and send them to /agree
+curl -s -X POST http://localhost:3220/api/agents/1/signing-key \
+  -H 'content-type: application/json' -d '{"pubkey": "0x04…"}'
+curl -s -X POST http://localhost:3220/api/engagements/1/agree \
+  -H 'content-type: application/json' \
+  -d '{"buyer_signature": "0x…", "provider_signature": "0x…"}'
+
+# Convenience verification (then re-run it yourself with packages/verifier)
+curl -s -X POST http://localhost:3220/api/verify \
+  -H 'content-type: application/json' -d '{"receipt": { … }}'
+```
+
+Independent verification: `packages/verifier` (`pacta-verify receipt.json
+[--rpc url]`) re-implements every formula with zero backend imports, and
+`/verify.html` runs the hash checks client-side in the browser. Anchoring env:
+`ANCHOR_PROVIDER` (`local` default, `rpc` for a real chain), `ANCHOR_RPC_URL`,
+`ANCHOR_CONTRACT_ADDRESS`, `ANCHOR_SIGNER_KEY`, `ANCHOR_CHAIN_ID` (default
+84532 = Base Sepolia), `DEBOUNCE_SECONDS=300`, `HEARTBEAT_HOURS=24`,
+`ALERT_AFTER_MINUTES=30`, `PLATFORM_SIGNING_KEY`.
+
 ## MCP server
 
 `mcp/server.js` exposes the full agent lifecycle as MCP tools over stdio
 (`search_offers`, `get_offer`, `create_engagement`, `agree_to_contract`,
 `fund_escrow`, `get_engagement`, `wait_for_provider_submission`,
 `verify_registry_reference`, `approve_and_release_payment`,
-`reject_and_open_dispute`, `rate_provider`, `get_my_balance`).
+`reject_and_open_dispute`, `rate_provider`, `get_my_balance`,
+`get_agreement_proof`, `verify_agreement_integrity`).
 
 ```json
 { "mcpServers": { "marketplace": {

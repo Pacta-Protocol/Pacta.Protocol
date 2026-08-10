@@ -17,6 +17,29 @@ default configuration every route behaves exactly as in 0.1.1. Candidate v0.2.0.
 
 ### Added
 
+- **Cryptographic agreement immutability (Phase 0,
+  [ADR-001](docs/adr/001-cryptographic-immutability.md))** - the Certificate
+  Transparency pattern applied to agreements. Agreeing now canonicalizes the
+  terms (RFC 8785), hashes them (`agreement_hash`, the engagement's universal
+  identity) and requires both parties' EIP-712 signatures (custodial signing
+  keys are the disclosed launch default; `POST /{kind}s/{id}/signing-key`
+  upgrades to self-custody, with `GET /engagements/{id}/agreement-preview`
+  exposing the exact digests to sign). Every lifecycle mutation appends one
+  entry to a hash-chained append-only event log (UPDATE/DELETE blocked by
+  triggers, free text and evidence bytes never logged - only hashes). Merkle
+  roots are anchored on a hybrid cadence (`DEBOUNCE_SECONDS`,
+  `HEARTBEAT_HOURS`) through the event-only permissionless
+  `contracts/AnchorRegistry.sol`; the `local` adapter (default) keeps CI
+  deterministic and the `rpc` adapter posts real transactions to any EVM
+  chain. Both parties get signed receipts with Merkle inclusion proofs
+  (`GET /api/engagements/{id}/proof`), verifiable by the new independent
+  `pacta-verify` CLI (`packages/verifier`, zero backend imports), by the
+  in-browser `/verify.html`, or server-side via `POST /api/verify`.
+  `GET /api/integrity` replays the whole chain publicly;
+  `GET /api/keys/platform` publishes the signing identity. Two new MCP tools:
+  `get_agreement_proof` and `verify_agreement_integrity` (12 -> 14).
+  Historical engagements are marked `pre-phase0`, never backfilled. New
+  runtime dependencies: `@noble/curves`, `@noble/hashes`.
 - **Pluggable registry adapters** (`src/registry.js`): the registry a proof
   verifies against is now an adapter behind one contract. The seeded SQLite
   table becomes the `local` reference adapter (still the default); the `http`

@@ -97,3 +97,30 @@ Key design decisions and their rationale.
     creation stays free (browsing is not a risk); the cap binds when the contract
     forms. Island Estates is seeded so its $300K offer exceeds its own cap — the
     graduated-trust gate is demoable out of the box.
+
+21. **Phase 0 immutability = Certificate Transparency, not an on-chain lifecycle**
+    (ADR-001). With verification, custody and arbitration off-chain, a lifecycle
+    contract would only notarize what Pacta's key relays (the sole-writer problem).
+    Instead: canonical agreements (RFC 8785 + SHA-256, `agreement_hash` as the
+    universal ID), dual EIP-712 signatures, a hash-chained append-only `event_log`
+    guarded by triggers, Merkle roots anchored through an event-only permissionless
+    contract, and receipts an independent verifier can check with zero backend
+    imports. The guarantee is detectability, not prevention - and that is stated
+    everywhere it matters.
+
+22. **Anchoring is an adapter, like the registry.** The `local` adapter (default)
+    simulates the chain in a table so demos and CI stay deterministic with no
+    wallet, no RPC and no gas; the `rpc` adapter signs legacy EIP-155 transactions
+    itself (minimal RLP, no web3 dependency) against any EVM chain. Selection
+    mirrors `src/registry.js`: `ANCHOR_RPC_URL` implies rpc, `ANCHOR_PROVIDER`
+    forces. Anchors with `chain_id: 0` are self-labeled as simulated - the
+    verifier refuses to pretend they are on a public chain.
+
+23. **Custodial signing keys are the launch default, disclosed and upgradeable.**
+    SMBs (and the demo UI) cannot be asked to manage secp256k1 keys on day one;
+    the platform holds their key, the custody mode is recorded per key and shown,
+    and `POST /{kind}s/{id}/signing-key` upgrades to self-custody with the same
+    signature format - after which the platform can no longer sign for that party
+    (enforced, tested). EIP-712 over Ed25519 purely for Phase 1 forward
+    compatibility. Pre-Phase 0 engagements are marked, never backfilled: a
+    signature that did not happen at agreement time would be theater.

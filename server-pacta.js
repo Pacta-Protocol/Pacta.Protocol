@@ -8,11 +8,18 @@ const { createApp } = require('./src/app');
 
 const PORT = Number(process.env.PORT || 3220);
 const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'pacta.db');
-const { app, seeded, registry } = createApp({ dbPath, pacta: true });
+const { app, db, seeded, registry } = createApp({ dbPath, pacta: true });
+
+// Phase 0 (ADR-001): anchor event-log Merkle roots on a hybrid cadence.
+// ANCHOR_AUTOSTART=0 disables (e.g. when running a standalone worker).
+const { createAnchorWorker } = require('./src/anchor');
+const anchorWorker = process.env.ANCHOR_AUTOSTART === '0' ? null : createAnchorWorker(db, {});
+if (anchorWorker) anchorWorker.start();
 
 const server = app.listen(PORT, () => {
   console.log(`[PACTA] Agent Services Marketplace running at http://localhost:${PORT}`);
   console.log(`[PACTA] Registry adapter: ${registry.name}`);
+  if (anchorWorker) console.log(`[PACTA] Anchor worker on (adapter: ${anchorWorker.adapter.name}).`);
   if (seeded) console.log('[PACTA] Seed data loaded (stakes, public registry, unvetted SMB demo).');
 });
 
