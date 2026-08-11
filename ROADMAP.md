@@ -31,6 +31,29 @@ release makes that boundary pluggable:
 
 This is the jump from demo to infrastructure: same protocol, real registries.
 
+## Phase 0 - cryptographic agreement immutability - shipped
+
+Removing the "trust Pacta not to rewrite history" assumption, per
+[ADR-001](docs/adr/001-cryptographic-immutability.md). The Certificate
+Transparency pattern applied to agreements, not an on-chain lifecycle:
+
+- [x] Canonical agreements (RFC 8785 + SHA-256, `agreement_hash` as the
+  universal engagement id) dually signed with EIP-712. Custodial keys are the
+  disclosed launch default; self-custody is a one-call upgrade. Shipped on `main`.
+- [x] Hash-chained append-only event log guarded by triggers; signed receipts
+  with Merkle inclusion proofs. Shipped on `main`.
+- [x] Public anchoring through an event-only, permissionless `AnchorRegistry`
+  contract; `local` adapter by default, `rpc` adapter for any EVM chain.
+  Shipped on `main`.
+- [x] An independent open-source verifier (`packages/verifier`, plus a browser
+  page) that proves history intact, or tampering, without Pacta. Shipped on `main`.
+- [ ] Anchor to a public L2 testnet (Base Sepolia) once a funded signer wallet
+  and RPC are provisioned; add receipts-trie verification to the indexer.
+
+Deliberately out of scope: custody of funds stays on the internal ledger. Phase
+1 (a minimal non-custodial escrow vault) is designed but gated behind an
+explicit market trigger.
+
 ## v0.3.0 - production hardening
 
 What separates a trustworthy PoC from something you can point real money at:
@@ -49,7 +72,10 @@ What separates a trustworthy PoC from something you can point real money at:
 
 - **Settlement adapters.** The ledger is integer-cents double-entry with a
   conservation invariant; a stablecoin or on-chain settlement adapter is a
-  natural module. Documented as roadmap so it never derails the core.
+  natural module. Note this is distinct from the anchoring that already shipped
+  in Phase 0: anchoring publishes tamper-evidence roots (no funds), settlement
+  would move value on-chain (funds). Documented as roadmap so it never derails
+  the core.
 - **Second vertical example: agriculture.** Agronomists and soil labs with
   registry-verified certifications, following the LandBridge template.
 - **Real-world pilot.** 3 to 5 Costa Rican SMBs in a sandbox, with published

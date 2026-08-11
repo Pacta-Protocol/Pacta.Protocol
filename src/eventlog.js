@@ -5,14 +5,14 @@
 //
 // prev_hash of the first entry is the 32-byte zero genesis constant. The
 // concatenation operates on the UTF-8 bytes of the 0x-prefixed prev_hash
-// string followed by the canonical JSON bytes — the verifier reimplements
+// string followed by the canonical JSON bytes - the verifier reimplements
 // this formula independently (packages/verifier), so any change here is a
 // breaking protocol change.
 //
 // append() must run inside the same transaction as the state change it
 // records; UPDATE/DELETE on the table are blocked by triggers (src/db.js).
 // Alongside each entry, Pacta's EIP-712 signature over the entry_hash is
-// stored (receipt_sigs) — the seed of the receipt both parties get.
+// stored (receipt_sigs) - the seed of the receipt both parties get.
 const crypto = require('node:crypto');
 const { canonicalize } = require('./canonical');
 const eip712 = require('./eip712');
@@ -30,7 +30,7 @@ const entryHashOf = (prevHash, entry) => `0x${crypto.createHash('sha256')
 
 // Append one event. `engagement` is the agreement_hash, 'platform' for global
 // events, or 'pre-phase0:<id>' for engagements that predate Phase 0. payload
-// must contain hashes and metadata only — never evidence bytes or free text.
+// must contain hashes and metadata only - never evidence bytes or free text.
 function append(db, { engagement, type, payload }) {
   const last = db.prepare('SELECT seq, entry_hash FROM event_log ORDER BY seq DESC LIMIT 1').get();
   const seq = last ? Number(last.seq) + 1 : 1;

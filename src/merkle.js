@@ -1,7 +1,7 @@
 'use strict';
 // Phase 0 (ADR-001): Merkle tree over event-log entry hashes.
 //
-// Construction (the verifier reimplements this independently — keep in sync
+// Construction (the verifier reimplements this independently - keep in sync
 // with packages/verifier and its README):
 //   - Leaves are the 32-byte entry_hash values, in seq order.
 //   - Parent = SHA-256(left_bytes || right_bytes) over the raw 32-byte values.

@@ -6,7 +6,7 @@
 // pacta_sig (Pacta's EIP-712 signature over entry_hash) is written the moment
 // the entry is appended; merkle_proof and anchor stay null until an anchor
 // covering the entry lands, then get backfilled on read. Receipts are
-// recomputed from the immutable log on demand — there is nothing to keep
+// recomputed from the immutable log on demand - there is nothing to keep
 // consistent.
 const eventlog = require('./eventlog');
 const { merkleProof } = require('./merkle');

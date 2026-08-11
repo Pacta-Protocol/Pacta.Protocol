@@ -27,23 +27,23 @@ Exit code `0` means every executed check passed; `1` means at least one FAIL.
 
 ## Checks, in order
 
-1. **entry_hash** — recompute `SHA-256(prev_hash || canonical(entry))` from the
+1. **entry_hash** - recompute `SHA-256(prev_hash || canonical(entry))` from the
    receipt's own contents and compare.
-2. **pacta_sig** — verify Pacta's EIP-712 signature over `entry_hash` against
+2. **pacta_sig** - verify Pacta's EIP-712 signature over `entry_hash` against
    the published platform pubkey (`GET /api/keys/platform`, or `--pubkey`).
-3. **agreement_hash + party signatures** (for `AgreementLocked` entries) —
+3. **agreement_hash + party signatures** (for `AgreementLocked` entries) -
    recompute the agreement hash from the embedded canonical terms and verify
    the buyer's and provider's EIP-712 signatures.
-4. **merkle_proof** — walk the inclusion proof from `entry_hash` to the
+4. **merkle_proof** - walk the inclusion proof from `entry_hash` to the
    anchored root.
-5. **anchor_on_chain** (`--rpc`) — fetch the anchoring transaction and confirm
+5. **anchor_on_chain** (`--rpc`) - fetch the anchoring transaction and confirm
    the `Anchored(root, fromSeq, toSeq, sender)` event matches the receipt.
    Anchors with `chain_id: 0` are simulated local-development anchors and are
    skipped.
 
 ## Protocol formulas (reimplemented here, independently)
 
-- **Canonical JSON**: RFC 8785 (JCS) — object keys sorted by UTF-16 code
+- **Canonical JSON**: RFC 8785 (JCS) - object keys sorted by UTF-16 code
   units, scalars serialized as `JSON.stringify` does.
 - **Entry hash**: `SHA-256( utf8(prev_hash_with_0x) || canonical({seq, engagement, type, payload, at}) )`,
   hex with `0x` prefix. Genesis `prev_hash` is 32 zero bytes (`0x00…00`).

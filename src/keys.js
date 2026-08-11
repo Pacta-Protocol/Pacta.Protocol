@@ -2,14 +2,14 @@
 // Phase 0 (ADR-001): signing-key registry.
 //
 // Two custody modes, recorded per key:
-//   self       — the owner holds the private key; only the pubkey is registered.
-//   custodial  — the platform generates and holds the key on the owner's
+//   self       - the owner holds the private key; only the pubkey is registered.
+//   custodial  - the platform generates and holds the key on the owner's
 //                behalf (launch default for SMBs, disclosed in the UI and in
 //                this registry). The signature format is identical, so a later
 //                migration to self-custody requires no re-signing.
 //
 // Custodial private keys are stored in the database for this simulated build;
-// a production deployment moves them (and the platform key) to a KMS — this is
+// a production deployment moves them (and the platform key) to a KMS - this is
 // listed in the production gaps doc. The platform's own key comes from the
 // PLATFORM_SIGNING_KEY env var, or a generated dev key persisted next to the
 // database (never in the repo).
@@ -57,7 +57,7 @@ function ensureCustodialKey(db, kind, id) {
 }
 
 // Sign an agreement digest on behalf of a party. Custodial keys sign with the
-// platform-held private key; self-custody parties must send their signature —
+// platform-held private key; self-custody parties must send their signature -
 // the platform cannot produce one for them.
 function signAsParty(db, keyRow, digest) {
   if (keyRow.custody !== 'custodial' || !keyRow.privkey) {

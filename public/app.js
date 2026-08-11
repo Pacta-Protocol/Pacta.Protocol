@@ -278,7 +278,7 @@
     if (role === 'agent') {
       if (e.state === 'draft') {
         parts.push(`<button class="btn" data-action="agree" data-id="${e.id}" data-testid="agree-button">Agree — lock terms &amp; steps</button>
-          <span class="muted small">Locks the ${e.steps_total} steps and ${escrowTerms(e)} into an immutable contract.</span>`);
+          <span class="muted small">Both parties cryptographically sign the ${e.steps_total} steps and ${escrowTerms(e)} (EIP-712); the terms lock into a hash-chained, independently verifiable contract.</span>`);
       }
       if (e.state === 'agreed') {
         parts.push(`<button class="btn" data-action="fund" data-id="${e.id}" data-testid="fund-button">
@@ -358,6 +358,8 @@
           <dt>Downpayment</dt><dd>${fmt(e.upfront_cents)} (${e.upfront_pct}%)</dd>
           <dt>On completion</dt><dd>${fmt(e.remaining_cents)}</dd>
           ${e.dispute_reason ? `<dt>Dispute reason</dt><dd data-testid="dispute-reason">${esc(e.dispute_reason)}</dd>` : ''}
+          ${e.agreement_hash ? `<dt>Agreement hash</dt><dd data-testid="agreement-hash"><code class="mono">${esc(e.agreement_hash)}</code></dd>
+          <dt>Signatures</dt><dd>Buyer and provider signed (EIP-712). <a href="/api/engagements/${e.id}/proof" target="_blank" rel="noopener">View receipts</a> · <a href="/verify.html" target="_blank" rel="noopener">Verify independently</a></dd>` : ''}
         </dl>
         <h2>Steps (${e.steps_done}/${e.steps_total} complete)</h2>
         <ol class="steps">${e.steps.map((s) => stepItem(e, s, role)).join('')}</ol>

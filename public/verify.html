@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pacta — Verify a receipt</title>
+  <title>Pacta - Verify a receipt</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <style>
     :root { color-scheme: light dark; }
@@ -18,13 +18,13 @@
   </style>
 </head>
 <body>
-  <h1>Verify a Pacta receipt — in your browser, no server round-trip</h1>
+  <h1>Verify a Pacta receipt - in your browser, no server round-trip</h1>
   <p>Paste a receipt (or the full bundle from <code>GET /api/engagements/:id/proof</code>).
   All hash checks below run <strong>entirely client-side</strong> in this page: the entry hash chain,
   the agreement hash, and the Merkle path to the anchored root. Nothing you paste is sent anywhere.</p>
   <p class="note">EIP-712 signature checks and the on-chain anchor lookup need secp256k1/keccak and an
   RPC node, which this dependency-free page does not ship: run the open-source CLI for the complete
-  set — <code>pacta-verify receipt.json --rpc &lt;url&gt;</code> (see <code>packages/verifier</code>).
+  set - <code>pacta-verify receipt.json --rpc &lt;url&gt;</code> (see <code>packages/verifier</code>).
   Detecting tampered history does not require signatures: any alteration already breaks the
   hash checks on this page.</p>
   <textarea id="input" placeholder='{ "entry": { ... }, "merkle_proof": [...], "anchor": {...}, "pacta_sig": "0x…" }'></textarea>
@@ -70,7 +70,7 @@ async function verifyOne(receipt) {
     const recomputed = await entryHashOf(entry.prev_hash, entry);
     push('entry_hash', recomputed === entry.entry_hash ? 'PASS' : 'FAIL',
       recomputed === entry.entry_hash ? 'entry hash recomputes identically'
-        : 'recomputed ' + recomputed + ' ≠ stored ' + entry.entry_hash + ' — the entry was altered');
+        : 'recomputed ' + recomputed + ' ≠ stored ' + entry.entry_hash + ' - the entry was altered');
   } catch (err) { push('entry_hash', 'FAIL', 'cannot recompute: ' + err.message); }
 
   if (entry.type === 'AgreementLocked' && entry.payload && entry.payload.agreement) {
@@ -78,7 +78,7 @@ async function verifyOne(receipt) {
     const claimed = entry.payload.agreement_hash;
     push('agreement_hash', recomputed === claimed ? 'PASS' : 'FAIL',
       recomputed === claimed ? 'agreement terms hash to the claimed identity'
-        : 'terms hash to ' + recomputed + ', not ' + claimed + ' — terms were altered');
+        : 'terms hash to ' + recomputed + ', not ' + claimed + ' - terms were altered');
   }
 
   if (receipt.merkle_proof && receipt.anchor) {
@@ -118,15 +118,15 @@ document.getElementById('run').addEventListener('click', async () => {
       if (c.status === 'FAIL') allPass = false;
       const div = document.createElement('div');
       div.className = 'check ' + c.status;
-      div.textContent = c.status + '  ' + c.name + ' — ' + c.detail;
+      div.textContent = c.status + '  ' + c.name + ' - ' + c.detail;
       out.appendChild(div);
     }
   }
   const verdict = document.createElement('p');
   verdict.className = 'verdict';
   verdict.textContent = allPass
-    ? 'PASS — the pasted history is intact (hash checks).'
-    : 'FAIL — this receipt proves tampering or is malformed.';
+    ? 'PASS - the pasted history is intact (hash checks).'
+    : 'FAIL - this receipt proves tampering or is malformed.';
   out.appendChild(verdict);
 });
 </script>

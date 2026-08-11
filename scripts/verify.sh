@@ -165,6 +165,38 @@ invariant_ok "after all scenarios"
 req GET /ledger
 assert_eq "$(field '.invariant.total_balances_cents')" "5000000" "total balances still exactly the \$50,000 minted"
 
+echo "== 11. Phase 0: agreement is signed, hash-chained, anchored, verifiable ======"
+req GET "/engagements/$EID"
+AGREEMENT_HASH=$(field '.agreement_hash')
+case "$AGREEMENT_HASH" in
+  0x*) echo "  PASS: engagement carries an agreement_hash ($AGREEMENT_HASH)"; PASS=$((PASS + 1)) ;;
+  *) echo "  FAIL: engagement has no agreement_hash"; FAIL=$((FAIL + 1)) ;;
+esac
+req GET "/integrity"
+assert_eq "$(field '.chain.ok')" "true" "event-log hash chain replays intact"
+req GET "/engagements/$EID/proof"
+assert_eq "$(field '.receipts.length > 0')" "true" "engagement has a receipt set"
+# Round-trip the first receipt through the server-side verifier.
+RECEIPT=$(printf '%s' "$BODY" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d);process.stdout.write(JSON.stringify({receipt:j.receipts[0]}));})')
+req POST "/verify" "$RECEIPT"
+assert_eq "$(field '.pass')" "true" "server-side verifier accepts a genuine receipt"
+# The independent CLI must accept the full proof bundle with the platform pubkey.
+req GET "/engagements/$EID/proof"
+printf '%s' "$BODY" > "$DB.proof.json"
+if node packages/verifier/bin/pacta-verify.js "$DB.proof.json" >/dev/null 2>&1; then
+  echo "  PASS: independent pacta-verify CLI validates the proof bundle"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: pacta-verify CLI rejected a genuine proof bundle"; FAIL=$((FAIL + 1))
+fi
+# Tamper: flip a byte in an entry hash and confirm the CLI now fails (exit 1).
+node -e 'const fs=require("fs");const p=process.argv[1];const d=JSON.parse(fs.readFileSync(p));d.receipts[0].entry.payload.tampered=true;fs.writeFileSync(p,JSON.stringify(d));' "$DB.proof.json"
+if node packages/verifier/bin/pacta-verify.js "$DB.proof.json" >/dev/null 2>&1; then
+  echo "  FAIL: pacta-verify CLI accepted a tampered bundle"; FAIL=$((FAIL + 1))
+else
+  echo "  PASS: pacta-verify CLI detects tampering (exit non-zero)"; PASS=$((PASS + 1))
+fi
+rm -f "$DB.proof.json"
+
 echo ""
 echo "================================================================="
 echo "RESULT: $PASS passed, $FAIL failed"

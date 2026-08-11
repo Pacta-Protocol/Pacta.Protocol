@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// pacta-verify — verify a Pacta receipt without trusting Pacta.
+// pacta-verify - verify a Pacta receipt without trusting Pacta.
 //
 //   pacta-verify receipt.json [--pubkey 0x04…] [--rpc https://…] [--sender 0x…]
 //                             [--chain-id 84532] [--json]

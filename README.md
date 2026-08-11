@@ -248,8 +248,8 @@ the marketplace app.
 - [docs/API.md](docs/API.md) — REST API with curl examples ·
   [docs/DECISIONS.md](docs/DECISIONS.md) — design decisions and rationale ·
   [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — how to deploy
-- [docs/adr/001-cryptographic-immutability.md](docs/adr/001-cryptographic-immutability.md) - ADR-001:
-  cryptographic agreement immutability (Phase 0) ·
+- [docs/adr/](docs/adr/) — Architecture Decision Records, starting with
+  [ADR-001: cryptographic agreement immutability (Phase 0)](docs/adr/001-cryptographic-immutability.md) ·
   [packages/verifier](packages/verifier) — the independent receipt verifier
 - [ROADMAP.md](ROADMAP.md) - where the protocol is going: real registry
   adapters, production hardening, settlement modules

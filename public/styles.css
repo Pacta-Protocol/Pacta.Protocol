@@ -225,6 +225,10 @@ table.tbl tr:last-child td { border-bottom: none; }
 .kv { display: grid; grid-template-columns: 160px 1fr; gap: 4px 12px; font-size: 14px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; font-weight: 500; }
+.kv dd .mono, code.mono {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 12px; word-break: break-all; color: var(--muted);
+}
 .notice { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin: 10px 0; }
 .ok-banner { background: var(--good-bg); color: var(--good); border-radius: 8px; padding: 10px 14px; font-size: 14px; font-weight: 600; margin: 10px 0; }
 

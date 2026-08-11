@@ -8,8 +8,8 @@
 // r||s||v (65 bytes, v in {27,28}), 0x-prefixed hex.
 //
 // Two message types are signed:
-//   Agreement(bytes32 agreementHash,string role,string nonce)  — by each party
-//   LogEntry(bytes32 entryHash)                                — by the platform (receipts)
+//   Agreement(bytes32 agreementHash,string role,string nonce)  - by each party
+//   LogEntry(bytes32 entryHash)                                - by the platform (receipts)
 const { secp256k1 } = require('@noble/curves/secp256k1.js');
 const { keccak_256 } = require('@noble/hashes/sha3.js');
 
@@ -100,7 +100,7 @@ function recoverPubkey(digest, sigHex) {
   }
 }
 
-// Ethereum address of an uncompressed pubkey — the identity the AnchorRegistry
+// Ethereum address of an uncompressed pubkey - the identity the AnchorRegistry
 // contract sees as msg.sender when this key sends anchor transactions.
 function addressOf(pubkeyHex) {
   const raw = toBytes(pubkeyHex);

@@ -8,6 +8,9 @@
   "bin": {
     "pacta-verify": "bin/pacta-verify.js"
   },
+  "scripts": {
+    "test": "node --test test.js"
+  },
   "engines": {
     "node": ">=22.5.0"
   },

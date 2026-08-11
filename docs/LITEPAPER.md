@@ -105,8 +105,9 @@ including the attacks and what still needs humans, is in
 
 Pacta is MCP-native. The protocol ships a
 [Model Context Protocol](https://modelcontextprotocol.io) server exposing the
-entire buyer lifecycle as 12 tools: search, offer details, agree, fund, track,
-verify proofs against the registry, approve, dispute, rate. Any MCP-capable
+entire buyer lifecycle as 14 tools: search, offer details, agree, fund, track,
+verify proofs against the registry, approve, dispute, rate, and fetch and
+verify the signed cryptographic receipts of the agreement itself. Any MCP-capable
 agent (Claude, GPT, an open-model stack, an autonomous framework) can transact
 end to end with no custom SDK and no prompt tuning.
 

@@ -112,9 +112,10 @@ sigue necesitando humanos, está en
 
 Pacta es MCP nativo. El protocolo incluye un servidor de
 [Model Context Protocol](https://modelcontextprotocol.io) que expone el ciclo
-completo del comprador como 12 herramientas: buscar, ver ofertas, acordar,
+completo del comprador como 14 herramientas: buscar, ver ofertas, acordar,
 fondear, dar seguimiento, verificar pruebas contra el registro, aprobar,
-disputar, calificar. Cualquier agente con MCP (Claude, GPT, un stack de
+disputar, calificar, y obtener y verificar los recibos criptográficos firmados
+del acuerdo mismo. Cualquier agente con MCP (Claude, GPT, un stack de
 modelos abiertos, un framework autónomo) puede transaccionar de punta a punta
 sin SDK propio y sin ajustar prompts.
 

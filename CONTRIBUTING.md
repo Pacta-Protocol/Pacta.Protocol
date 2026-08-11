@@ -11,11 +11,20 @@ Thanks for your interest in improving Pacta. This repository holds the **protoco
 
 ## What lives here
 
-- `src/` — the protocol core: `api.js` (REST), `ledger.js` (double-entry escrow),
-  `staking.js` (stake, slashing, graduated exposure cap), `db.js`, `seed.js`.
-- `mcp/` — the MCP server that wraps the REST API 1:1 as agent tools.
-- `public/` — the reference explorer (vanilla-JS SPA). No build step.
-- `e2e/`, `tests/` — Playwright end-to-end and `node --test` unit tests.
+- `src/` - the protocol core: `api.js` (REST), `ledger.js` (double-entry escrow),
+  `staking.js` (stake, slashing, graduated exposure cap), `registry.js`
+  (pluggable proof verification), `db.js`, `seed.js`. Phase 0 immutability
+  (ADR-001) adds `canonical.js` (RFC 8785 hashing), `eip712.js` and `keys.js`
+  (signatures + key custody), `eventlog.js` (hash-chained log), `merkle.js`,
+  `receipts.js`, and `anchor.js` (anchoring adapters + worker).
+- `mcp/` - the MCP server that wraps the REST API 1:1 as agent tools.
+- `public/` - the reference explorer (vanilla-JS SPA), including `verify.html`.
+  No build step.
+- `packages/verifier/` - the independent, zero-backend-dependency receipt
+  verifier (`pacta-verify` CLI). Keep it importing nothing from `src/`; run its
+  tests with `npm run test:verifier`.
+- `contracts/` - `AnchorRegistry.sol`, the event-only anchoring contract.
+- `e2e/`, `tests/` - Playwright end-to-end and `node --test` unit tests.
 - `scripts/` — demo clients and dev helpers.
 
 ## Prerequisites

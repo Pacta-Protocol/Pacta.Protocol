@@ -8,7 +8,7 @@
 // RFC 8785 number and string rules. Semantically identical inputs (key order
 // shuffled, whitespace varied) therefore produce byte-identical output.
 //
-// agreement_hash = SHA-256 over the canonical bytes, hex, 0x-prefixed — the
+// agreement_hash = SHA-256 over the canonical bytes, hex, 0x-prefixed - the
 // universal engagement identifier. The canonical object contains no unhashed
 // free text: step titles/descriptions enter as desc_hash, the engagement
 // title as title_hash.
@@ -47,7 +47,7 @@ function canonicalize(value) {
 
 const sha256hex = (input) => `0x${crypto.createHash('sha256').update(input).digest('hex')}`;
 
-// Hash of a canonicalizable value — used for every free-text field that must
+// Hash of a canonicalizable value - used for every free-text field that must
 // bind the agreement without entering it.
 const hashOf = (value) => sha256hex(canonicalize(value));
 

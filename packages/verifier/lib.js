@@ -1,11 +1,11 @@
 'use strict';
-// pacta-verify — independent verifier for Pacta Phase 0 receipts (ADR-001).
+// pacta-verify - independent verifier for Pacta Phase 0 receipts (ADR-001).
 //
 // HARD RULE: this package must never import Pacta backend code or require
 // Pacta credentials. Every formula below is reimplemented from the protocol
 // definition so that a receipt can be checked by anyone, offline, against any
 // RPC node, without Pacta's cooperation. If a check fails here, either the
-// receipt is forged or history was tampered with — that is the product.
+// receipt is forged or history was tampered with - that is the product.
 //
 // Protocol formulas (must match docs; changing any is a breaking change):
 //   canonical JSON      RFC 8785 (JCS): sorted keys, JSON.stringify scalars
@@ -117,7 +117,7 @@ function verifyReceipt(receipt, { platformPubkey, chainId } = {}) {
     push('entry_hash', recomputed === entry.entry_hash ? 'PASS' : 'FAIL',
       recomputed === entry.entry_hash
         ? `entry_hash recomputed identically (${entry.entry_hash.slice(0, 18)}…)`
-        : `recomputed ${recomputed} but receipt says ${entry.entry_hash} — the entry was altered`);
+        : `recomputed ${recomputed} but receipt says ${entry.entry_hash} - the entry was altered`);
   } catch (err) {
     push('entry_hash', 'FAIL', `cannot recompute: ${err.message}`);
   }
@@ -141,7 +141,7 @@ function verifyReceipt(receipt, { platformPubkey, chainId } = {}) {
     push('agreement_hash', recomputed === claimed ? 'PASS' : 'FAIL',
       recomputed === claimed
         ? `agreement terms hash to the claimed identity (${claimed.slice(0, 18)}…)`
-        : `terms hash to ${recomputed}, not the claimed ${claimed} — terms were altered`);
+        : `terms hash to ${recomputed}, not the claimed ${claimed} - terms were altered`);
     for (const role of ['buyer', 'provider']) {
       const pubkey = agreement[role] && agreement[role].pubkey;
       const sig = signatures[role];
@@ -179,7 +179,7 @@ const ANCHORED_TOPIC = () => toHex(keccak_256(Buffer.from('Anchored(bytes32,uint
 async function checkAnchorOnChain(anchor, { rpcUrl, senderAddress } = {}) {
   if (!anchor) return { name: 'anchor_on_chain', status: 'SKIP', detail: 'receipt has no anchor yet' };
   if (Number(anchor.chain_id) === 0) {
-    return { name: 'anchor_on_chain', status: 'SKIP', detail: 'chain_id 0 is a simulated local anchor — nothing on a public chain to check' };
+    return { name: 'anchor_on_chain', status: 'SKIP', detail: 'chain_id 0 is a simulated local anchor - nothing on a public chain to check' };
   }
   if (!rpcUrl) return { name: 'anchor_on_chain', status: 'SKIP', detail: 'no --rpc provided' };
   const res = await fetch(rpcUrl, {

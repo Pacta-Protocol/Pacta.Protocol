@@ -7,18 +7,18 @@
 //   fetchAnchors()                -> [{ root, from_seq, to_seq, sender, tx_hash, block_number }]
 //
 // Adapters:
-//   local  (default) — a simulated chain in the local_chain table. Keeps every
+//   local  (default) - a simulated chain in the local_chain table. Keeps every
 //            demo and CI run deterministic with no RPC, no wallet, no gas.
-//   rpc    — the real thing: sends anchor(bytes32,uint64,uint64) transactions
+//   rpc    - the real thing: sends anchor(bytes32,uint64,uint64) transactions
 //            to an AnchorRegistry contract (contracts/AnchorRegistry.sol) on
 //            any EVM chain via raw JSON-RPC. No web3 dependency: legacy
 //            EIP-155 transactions, RLP-encoded and secp256k1-signed here.
 //
 // Selection mirrors src/llm.js / src/registry.js: ANCHOR_RPC_URL implies rpc;
 // ANCHOR_PROVIDER forces. Cadence (all from config/env, never hardcoded):
-//   DEBOUNCE_SECONDS (default 300)  — batch entries, anchor once per burst
-//   HEARTBEAT_HOURS  (default 24)   — re-anchor last root as liveness signal
-//   ALERT_AFTER_MINUTES (default 30) — alert if anchoring keeps failing
+//   DEBOUNCE_SECONDS (default 300)  - batch entries, anchor once per burst
+//   HEARTBEAT_HOURS  (default 24)   - re-anchor last root as liveness signal
+//   ALERT_AFTER_MINUTES (default 30) - alert if anchoring keeps failing
 const crypto = require('node:crypto');
 const { keccak_256 } = require('@noble/hashes/sha3.js');
 const { secp256k1 } = require('@noble/curves/secp256k1.js');
@@ -116,7 +116,7 @@ class RpcAnchorAdapter {
     return data.result;
   }
 
-  // Legacy EIP-155 transaction, signed locally — no web3 library.
+  // Legacy EIP-155 transaction, signed locally - no web3 library.
   signTx({ nonce, gasPrice, gas, data }) {
     const unsigned = [qty(nonce), qty(gasPrice), qty(gas), toBytes(this.contract), qty(0), toBytes(data),
       qty(this.chainId), Buffer.alloc(0), Buffer.alloc(0)];
@@ -156,7 +156,7 @@ class RpcAnchorAdapter {
   }
 
   // Self-monitor source. Residual trust: we take the RPC node's logs and
-  // headers at their word (no receipts-trie proof yet — tracked as a follow-up
+  // headers at their word (no receipts-trie proof yet - tracked as a follow-up
   // for the real-testnet task). Mitigation available today: configure a second
   // independent RPC and compare, or run the open verifier against any node.
   async fetchAnchors() {
