@@ -29,14 +29,24 @@ flowchart LR
 
     MCP["MCP server<br/>mcp/server.js<br/>wraps the REST API 1:1 as tools"]
 
-    subgraph APP["Marketplace app — server.js (Express 5, port 3210)"]
+    subgraph APP["Marketplace app — server-pacta.js (Express 5, port 3220)"]
         API["REST API<br/>src/api.js"]
         SM["Contract state machine<br/>draft → agreed → funded → in_progress →<br/>submitted → completed | disputed → resolved"]
-        LEDGER["Double-entry ledger<br/>src/ledger.js (integer cents,<br/>one escrow account per engagement)"]
+        SETTLE["SettlementBackend interface<br/>src/settlement.js<br/>(integer minor units, chosen by<br/>SETTLEMENT_BACKEND)"]
         STAKE["Staking & vetting<br/>src/staking.js (stake, slashing,<br/>graduated exposure cap)"]
         REG["Registry verification<br/>proofs re-checked against<br/>public-registry references"]
+        LOG["Hash-chained event log<br/>+ signed receipts<br/>src/eventlog.js"]
+        ANCHORSVC["Anchoring service<br/>src/anchor.js — Merkle root<br/>over the log every 12h"]
         DB[("SQLite<br/>node:sqlite — data/*.db")]
     end
+
+    subgraph Settlement backends
+        LEDGER["ledger adapter (default)<br/>double-entry ledger src/ledger.js<br/>no wallet / no chain / no crypto"]
+        VAULT["base-escrow-vault adapter<br/>USDC EscrowVault on Base<br/>(Pacta.Settlement.Base)"]
+    end
+
+    BASE["AnchorRegistry on Base<br/>mainnet + Sepolia<br/>(RootAnchored events)"]
+    VERIFIER["Standalone verifier<br/>packages/verifier — checks an<br/>agreement against Base via public RPC"]
 
     AGENT -->|"stdio (tools)"| MCP
     MCP -->|HTTP| API
@@ -45,16 +55,26 @@ flowchart LR
     API --> SM
     API --> STAKE
     API --> REG
-    SM --> LEDGER
+    SM --> SETTLE
+    SETTLE --> LEDGER
+    SETTLE -.->|"SETTLEMENT_BACKEND=base-escrow-vault"| VAULT
     LEDGER --> DB
-    SM --> DB
+    SM --> LOG
+    LOG --> DB
     STAKE --> DB
     REG --> DB
+    LOG --> ANCHORSVC
+    ANCHORSVC -->|"anchor(root, window)"| BASE
+    VAULT -.-> BASE
+    VERIFIER -.->|"reads RootAnchored"| BASE
 ```
 
 Everything the dashboard does goes through the same REST API an agent calls — the MCP
-server adds no privileged path. See [docs/API.md](docs/API.md) for the full lifecycle with curl
-examples.
+server adds no privileged path. Money movement goes through the `SettlementBackend`
+interface, so the core never imports a chain library; the ledger adapter is the default
+and Base is the reference on-chain backend. The hash-chained event log is anchored to
+Base every 12h, and anyone can verify an agreement against those on-chain roots without
+Pacta. See [docs/API.md](docs/API.md) for the full lifecycle with curl examples.
 
 ## Requirements
 
