@@ -732,14 +732,17 @@
     if (!chip) return;
     try {
       const it = await api('GET', '/integrity');
-      const la = it && it.last_anchor;
+      // Prefer the most recent anchor that actually covers log entries, so the
+      // chip links to real content rather than an empty-window heartbeat.
+      const la = (it && it.last_content_anchor) || (it && it.last_anchor);
       const domainChain = it && it.platform && it.platform.eip712_domain
         ? Number(it.platform.eip712_domain.chain_id) : 0;
-      if (la && la.tx_hash && Number(la.chain_id) !== 0) {
+      if (la && la.tx_hash && Number(la.chain_id) !== 0 && la.leaf_count > 0) {
         const explorer = EXPLORERS[Number(la.chain_id)];
         const net = Number(la.chain_id) === 8453 ? 'Base' : 'Base Sepolia';
-        chip.textContent = `⛓ Anchored to ${net} · #${la.sequence}`;
-        chip.title = `Merkle root of ${la.leaf_count} log entr${la.leaf_count === 1 ? 'y' : 'ies'} anchored on-chain — click to view the transaction on the explorer`;
+        const n = la.leaf_count;
+        chip.textContent = `⛓ Anchored to ${net} · ${n} ${n === 1 ? 'entry' : 'entries'}`;
+        chip.title = `The latest Merkle root covering ${n} log entr${n === 1 ? 'y' : 'ies'} is anchored on ${net} (anchor #${la.sequence}) — click to view the transaction on the explorer`;
         if (explorer) chip.href = `${explorer}/tx/${la.tx_hash}`; else chip.removeAttribute('href');
         chip.hidden = false;
       } else if (domainChain && domainChain !== 0) {
