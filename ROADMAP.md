@@ -49,10 +49,12 @@ Transparency pattern applied to agreements, not an on-chain lifecycle:
   Shipped on `main`.
 - [x] An independent open-source verifier (`packages/verifier`, plus a browser
   page) that proves history intact, or tampering, without Pacta. Shipped on `main`.
-- [ ] Deploy `AnchorRegistry` to **Base mainnet** and run the anchoring loop
-  against it once a funded anchorer wallet and RPC are provisioned
-  (`scripts/deploy-anchor-registry.js` is ready); add receipts-trie verification
-  to the indexer.
+- [x] `AnchorRegistry` **deployed and source-verified on Base mainnet**
+  (`0x866316ae68b297cc2b3ed2daaf3cabd4f5e39de1`, chain id 8453) on 2026-08-23,
+  with a Base Sepolia mirror (`0xb1cb4c8d26e2457705f0ffaa823019c2ba0c4fa2`,
+  chain id 84532); the anchoring loop runs against it on 12h windows, always
+  emitting. Shipped on `main`. Remaining: add receipts-trie verification to the
+  indexer.
 
 Deliberately out of scope: custody of funds stays on the internal ledger. Phase
 1 (a minimal non-custodial escrow vault) is designed but gated behind an

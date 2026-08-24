@@ -235,21 +235,34 @@ The on-chain event is
 leaf value `SHA-256(0x00 || entry_hash)`, then fold in each sibling with
 `SHA-256(0x01 || …)`, left/right per `pos`.
 
-### On-chain deployment (Base)
+### Deployments
 
-| | |
-|---|---|
-| Network | Base mainnet (chain id `8453`) |
-| Contract | `{{ANCHOR_REGISTRY_ADDRESS}}` |
-| Basescan | https://basescan.org/address/{{ANCHOR_REGISTRY_ADDRESS}} |
-| First anchor tx | https://basescan.org/tx/{{ANCHOR_FIRST_TX}} |
-| Cadence | one anchor every 12 hours, empty windows included (`leafCount = 0`) |
+The `AnchorRegistry` is **deployed and source-verified on Base mainnet** (the
+production contract, the one the app anchors to) and on Base Sepolia as the
+testnet mirror. Same source, same anchorer behaviour on both:
 
-The `{{…}}` placeholders are filled in at deployment. Until then the anchoring
-service runs against the deterministic `local` adapter and this README, the docs
-site, and the homepage carry the same placeholders — a mainnet claim never ships
-ahead of the mainnet deployment. Rotate the anchorer key with `setAnchorer`
-(see [ADR-002](docs/adr/002-windowed-anchoring-base.md)).
+| | Production — Base mainnet | Testnet — Base Sepolia |
+|---|---|---|
+| Chain id | `8453` | `84532` |
+| `AnchorRegistry` | [`0x866316ae68b297cc2b3ed2daaf3cabd4f5e39de1`](https://basescan.org/address/0x866316ae68b297cc2b3ed2daaf3cabd4f5e39de1#code) | [`0xb1cb4c8d26e2457705f0ffaa823019c2ba0c4fa2`](https://sepolia.basescan.org/address/0xb1cb4c8d26e2457705f0ffaa823019c2ba0c4fa2#code) |
+| Anchorer | `0x60b134390c33Ae25f4a6f4948b3170fc71F39e67` | `0xd09ff24418Fc067F2C56F16CD486ADB169C9AeEa` |
+| Public RPC | `https://mainnet.base.org` | `https://sepolia.base.org` |
+| Explorer | [Basescan (source verified)](https://basescan.org/address/0x866316ae68b297cc2b3ed2daaf3cabd4f5e39de1#code) | [Basescan (source verified)](https://sepolia.basescan.org/address/0xb1cb4c8d26e2457705f0ffaa823019c2ba0c4fa2#code) |
+
+**First anchors on mainnet** (2026-08-23): anchor `#0` published a Merkle root
+over an 11-leaf window
+([tx](https://basescan.org/tx/0xfbb705b3f764d94aaf00d0d8b0db6f2fd9c5cccb38b67ca90c288fa411037917)),
+followed by anchor `#1` — an empty window emitted with `leafCount = 0` and a zero
+root
+([tx](https://basescan.org/tx/0xea65e407c0d92b8be083f7e90f275330837dc7d7da85c28713d95989efbce4b8)),
+demonstrating the always-emit liveness guarantee on-chain.
+
+**Cadence.** One anchor per 12-hour window (`ANCHOR_WINDOW_HOURS`, default 12),
+**always emitting** — empty windows go out with `leafCount = 0` and the zero
+root, so a gap in the on-chain sequence is itself the liveness alarm, never
+silently hidden activity. Each anchor is written by the single authorized
+anchorer above; rotate that key with `setAnchorer` (see
+[ADR-002](docs/adr/002-windowed-anchoring-base.md)).
 
 ### Verify it yourself
 
@@ -272,15 +285,23 @@ node packages/verifier/bin/pacta-verify.js receipt.json
 
 # 4. Confirm the anchored root against Base itself, over a public RPC. The
 #    anchoring tx hash is inside the receipt; --rpc turns on the on-chain check.
+#    Production is the mainnet AnchorRegistry at
+#    0x866316ae68b297cc2b3ed2daaf3cabd4f5e39de1 (chain id 8453).
 node packages/verifier/bin/pacta-verify.js receipt.json --rpc https://mainnet.base.org
+
+# Testnet alternative: the same check against the Base Sepolia mirror
+# (AnchorRegistry 0xb1cb4c8d26e2457705f0ffaa823019c2ba0c4fa2, chain id 84532).
+node packages/verifier/bin/pacta-verify.js receipt.json --rpc https://sepolia.base.org
 ```
 
 The verifier recomputes the hash chain, the agreement hash, and the Merkle path
 client-side, then (with `--rpc`) reads the `RootAnchored` event from Base via the
-anchoring tx recorded in the receipt and compares. Steps 1–3 pass today; the
-on-chain check in step 4 activates once the registry is deployed — until then the
-demo anchors against the deterministic `local` adapter (`chain_id 0`) and that
-check reports `SKIP`, never a false pass. A browser version that needs no install
+anchoring tx recorded in the receipt and compares. Steps 1–3 pass today. The
+on-chain check in step 4 runs against the live, source-verified `AnchorRegistry`
+on Base mainnet; point `--rpc` at a receipt whose anchor targeted mainnet
+(`chain_id 8453`) or Sepolia (`chain_id 84532`) to confirm it. If you re-run the
+local demo instead, it anchors against the deterministic `local` adapter
+(`chain_id 0`) and that check reports `SKIP`, never a false pass. A browser version that needs no install
 is at **[pactaprotocol.org/verify.html](https://pactaprotocol.org/verify.html)**
 (and locally at `/verify.html`). If verification required trusting a Pacta API,
 the whole exercise would be pointless — so it does not.
