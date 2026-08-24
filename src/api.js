@@ -952,7 +952,14 @@ function createApiRouter(db, { pacta = false, registry = null, settlement = null
       } : null,
       platform: {
         pubkey: keysmod.platformPubkey(),
-        anchor_sender: eip712.addressOf(keysmod.platformPubkey()),
+        // The address that actually writes anchors: the anchoring adapter's sender
+        // (the rpc anchorer key on a real chain, or the platform address for the
+        // local simulated adapter). Falls back to the platform address if the
+        // adapter can't be constructed.
+        anchor_sender: (() => {
+          try { return require('./anchor').createAnchorAdapter(db, process.env).sender; }
+          catch { return eip712.addressOf(keysmod.platformPubkey()); }
+        })(),
         eip712_domain: { name: eip712.DOMAIN_NAME, version: eip712.DOMAIN_VERSION, chain_id: eip712.chainId() },
       },
     });
