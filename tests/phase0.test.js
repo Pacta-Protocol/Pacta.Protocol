@@ -15,6 +15,7 @@ const merkle = require('../src/merkle');
 const eventlog = require('../src/eventlog');
 const keysmod = require('../src/keys');
 const anchor = require('../src/anchor');
+const receipts = require('../src/receipts');
 const verifier = require('../packages/verifier/lib');
 
 const CHAIN_ID = eip712.chainId();
@@ -57,11 +58,18 @@ test('eip712: sign, verify, recover round-trip; wrong key and tampered digest fa
 
 // ---------- Merkle -------------------------------------------------------------
 
-test('merkle: single leaf, odd counts, proof verification, forged sibling', () => {
+test('merkle: domain separation, single leaf, odd counts, proof, forged sibling', () => {
   const h = (s) => canonical.sha256hex(s);
+  // Empty window -> zero root. A single leaf's root is its domain-separated
+  // leaf value H(0x00 || entry_hash), never the raw entry_hash.
+  assert.strictEqual(merkle.merkleRoot([]), merkle.ZERO_ROOT);
   const one = [h('a')];
-  assert.strictEqual(merkle.merkleRoot(one), h('a'));
+  assert.strictEqual(merkle.merkleRoot(one), merkle.leafHash(h('a')));
+  assert.notStrictEqual(merkle.merkleRoot(one), h('a'));
   assert.deepStrictEqual(merkle.merkleProof(one, 0), []);
+  // Domain separation: a 2-leaf root is H(0x01 || leaf0 || leaf1), not H(l0||l1).
+  const two = [h('x'), h('y')];
+  assert.strictEqual(merkle.merkleRoot(two), merkle.nodeHash(merkle.leafHash(h('x')), merkle.leafHash(h('y'))));
   for (const n of [2, 3, 5, 8]) {
     const leaves = Array.from({ length: n }, (_, i) => h(`leaf${i}`));
     const root = merkle.merkleRoot(leaves);
@@ -260,46 +268,101 @@ test('self-custody: the platform cannot sign for you; your own signature works',
 
 // ---------- anchoring ----------------------------------------------------------
 
-test('local anchoring: receipts gain Merkle proofs; heartbeat and reconcile work', async (t) => {
+test('windowed anchoring: covering window proves entries; empty window emits; reconcile works', async (t) => {
   const { s, id } = await runLifecycle(t);
   await s.api('POST', `/engagements/${id}/fund`, {});
   const adapter = new anchor.LocalAnchorAdapter(s.db);
-  const anchored = await anchor.anchorPending(s.db, adapter);
+  const eventCount = s.db.prepare('SELECT COUNT(*) AS n FROM event_log').get().n;
+
+  // First window covers the whole log so far: always emits, sequence starts 0.
+  // now is pushed 2s ahead so the window closes on a fully-elapsed second
+  // (windowEnd = nowSec - 1) that is past every event just written.
+  const t0 = Date.now() + 2000;
+  const anchored = await anchor.anchorPending(s.db, adapter, { now: t0 });
   assert.ok(anchored.root.startsWith('0x'));
-  assert.strictEqual(anchored.from_seq, 1);
+  assert.strictEqual(anchored.sequence, 0);
+  assert.strictEqual(anchored.leaf_count, eventCount);
+  assert.ok(anchored.window_start < anchored.window_end);
 
   const platform = (await s.api('GET', '/keys/platform')).body;
   const proof = (await s.api('GET', `/engagements/${id}/proof`)).body;
   for (const receipt of proof.receipts) {
     assert.ok(receipt.merkle_proof, `seq ${receipt.entry.seq} should be anchored`);
     assert.strictEqual(receipt.anchor.root, anchored.root);
+    assert.strictEqual(receipt.anchor.sequence, 0);
     const result = verifier.verifyReceipt(receipt, { platformPubkey: platform.pubkey, chainId: CHAIN_ID });
     assert.strictEqual(result.pass, true, JSON.stringify(result.checks));
     assert.strictEqual(result.checks.find((c) => c.name === 'merkle_proof').status, 'PASS');
   }
 
   // Forged sibling in an otherwise valid proof must fail the Merkle walk.
-  const forged = JSON.parse(JSON.stringify(proof.receipts[0]));
-  if (forged.merkle_proof.length) {
-    forged.merkle_proof[0].hash = canonical.sha256hex('evil');
-    const bad = verifier.verifyReceipt(forged, { platformPubkey: platform.pubkey, chainId: CHAIN_ID });
-    assert.strictEqual(bad.checks.find((c) => c.name === 'merkle_proof').status, 'FAIL');
-  }
+  const forged = JSON.parse(JSON.stringify(proof.receipts.find((r) => r.merkle_proof.length)));
+  forged.merkle_proof[0].hash = canonical.sha256hex('evil');
+  const bad = verifier.verifyReceipt(forged, { platformPubkey: platform.pubkey, chainId: CHAIN_ID });
+  assert.strictEqual(bad.checks.find((c) => c.name === 'merkle_proof').status, 'FAIL');
 
-  // Nothing pending → no new anchor; heartbeat re-anchors the last root.
-  assert.strictEqual(await anchor.anchorPending(s.db, adapter), null);
-  const hb = await anchor.anchorHeartbeat(s.db, adapter);
-  assert.strictEqual(hb.root, anchored.root);
-  assert.strictEqual(hb.from_seq, hb.to_seq);
+  // Zero-width window (no time elapsed) is the one non-emitting case.
+  const e1 = anchored.window_end;
+  assert.strictEqual(await anchor.anchorPending(s.db, adapter, { now: e1 * 1000 }), null);
 
-  // Self-monitor: clean reconcile, then detect an anchor from our sender that
-  // we never recorded (key-compromise signal).
+  // Empty window: time elapses, no new events -> emits leaf_count 0 + zero root.
+  const empty = await anchor.anchorPending(s.db, adapter, { now: (e1 + 100) * 1000 });
+  assert.strictEqual(empty.leaf_count, 0);
+  assert.strictEqual(empty.root, merkle.ZERO_ROOT);
+  assert.strictEqual(empty.sequence, 1);
+
+  // Self-monitor: clean reconcile, then detect an on-chain anchor we never
+  // recorded (only the authorized anchorer can write, so it is a compromise
+  // signal).
   assert.strictEqual((await anchor.reconcile(s.db, adapter)).ok, true);
-  s.db.prepare('INSERT INTO local_chain (root, from_seq, to_seq, sender, tx_hash) VALUES (?, 1, 1, ?, ?)')
-    .run(canonical.sha256hex('rogue'), adapter.sender, canonical.sha256hex('rogue-tx'));
+  s.db.prepare('INSERT INTO local_chain (sequence, root, window_start, window_end, leaf_count, sender, tx_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(99, canonical.sha256hex('rogue'), e1, e1 + 1, 0, adapter.sender, canonical.sha256hex('rogue-tx'));
   const alerts = await anchor.reconcile(s.db, adapter);
   assert.strictEqual(alerts.ok, false);
-  assert.strictEqual(alerts.alerts[0].kind, 'unknown_anchor_from_our_sender');
+  assert.strictEqual(alerts.alerts[0].kind, 'unknown_anchor_on_chain');
+});
+
+// Regression: an entry that lands in the second an anchor runs in must NOT be
+// orphaned. If the window closed on the current second (nowSec), an entry
+// inserted after the log read but in that same second would be absent from the
+// anchored leaves yet excluded from every future window (which selects
+// t > windowStart == this windowEnd). Closing at nowSec-1 defers it instead.
+test('windowed anchoring: an entry arriving in the anchoring second is not orphaned', async (t) => {
+  const s = await startTestServer({ pacta: true });
+  t.after(() => s.close());
+  const adapter = new anchor.LocalAnchorAdapter(s.db);
+
+  const N = Math.floor(Date.now() / 1000);
+  const iso = (sec) => new Date(sec * 1000).toISOString();
+  const nextSeq = () => Number(s.db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM event_log').get().m) + 1;
+  const insertEvent = (atSec, seed) => {
+    const seq = nextSeq();
+    s.db.prepare(
+      'INSERT INTO event_log (seq, engagement, type, payload, at, prev_hash, entry_hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(seq, 'platform', 'Test', '{}', iso(atSec), canonical.sha256hex(`prev${seq}`), canonical.sha256hex(seed));
+    return seq;
+  };
+
+  // An early entry gives window #0 a non-empty span ending at N-1.
+  insertEvent(N - 3, 'a0');
+  const a0 = await anchor.anchorPending(s.db, adapter, { now: N * 1000 });
+  assert.strictEqual(a0.window_end, N - 1); // never the in-progress second N
+
+  // The race: an entry lands in second N — the very second the previous anchor
+  // ran in — arriving after that anchor read the log.
+  const raceSeq = insertEvent(N, 'a1');
+
+  // It is not (wrongly) claimed by window #0...
+  assert.strictEqual(receipts.receiptForSeq(s.db, raceSeq).merkle_proof, null);
+
+  // ...and the next window picks it up: covered, not orphaned.
+  const a1 = await anchor.anchorPending(s.db, adapter, { now: (N + 2) * 1000 });
+  assert.strictEqual(a1.window_start, N - 1);
+  assert.ok(a1.leaf_count >= 1);
+  const covered = receipts.receiptForSeq(s.db, raceSeq);
+  assert.ok(covered.merkle_proof, 'the boundary entry must gain a Merkle proof');
+  assert.strictEqual(covered.anchor.sequence, a1.sequence);
+  assert.strictEqual(merkle.verifyProof(covered.entry.entry_hash, covered.merkle_proof, covered.anchor.root), true);
 });
 
 test('pre-phase0 engagements are marked, not backfilled', async (t) => {

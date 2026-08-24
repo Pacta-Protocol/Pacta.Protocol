@@ -2,10 +2,11 @@
 const express = require('express');
 const { withTx } = require('./db');
 const {
-  LedgerError, getOrCreateAccount, getAccount, transfer, checkInvariant,
+  LedgerError, getOrCreateAccount, getAccount, checkInvariant,
 } = require('./ledger');
 const staking = require('./staking');
 const { LocalRegistryAdapter, RegistryUnavailableError } = require('./registry');
+const { createSettlementBackend, SettlementError } = require('./settlement');
 const { createHardening, HardeningError } = require('./hardening');
 // Phase 0 (ADR-001): cryptographic agreement immutability.
 const canonical = require('./canonical');
@@ -34,12 +35,15 @@ const TRANSITIONS = {
   resolve: { from: ['disputed'], to: 'resolved' },
 };
 
-function createApiRouter(db, { pacta = false, registry = null, hardening = {} } = {}) {
+function createApiRouter(db, { pacta = false, registry = null, settlement = null, hardening = {} } = {}) {
   const router = express.Router();
   router.use(express.json());
   // Where proof references get verified. Defaults to the seeded local registry;
   // see src/registry.js for the adapter contract and the external adapters.
   const registryAdapter = registry || new LocalRegistryAdapter(db);
+  // How escrow, collateral and slashing settle. Defaults to the internal ledger;
+  // see src/settlement.js for the interface and SETTLEMENT_BACKEND selection.
+  const settlementBackend = settlement || createSettlementBackend(db);
   // API keys, rate limiting, idempotency, provider webhooks (src/hardening.js).
   const hard = createHardening(db, hardening);
   router.use(hard.rateLimiter);
@@ -84,8 +88,8 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
       rating: r,
     };
     if (pacta) {
-      base.stake_cents = staking.stakeBalanceCents(db, smb.id);
-      base.exposure_cap_cents = staking.exposureCapCents(db, smb.id);
+      base.stake_cents = stakeBalanceCents(smb.id);
+      base.exposure_cap_cents = exposureCapCents(smb.id);
       base.active_exposure_cents = staking.activeExposureCents(db, smb.id);
     }
     return base;
@@ -219,6 +223,37 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
     return body;
   };
 
+  // ---------- settlement helpers ---------------------------------------------
+  // Everything that moves money — escrow, collateral, slashing — goes through the
+  // settlement backend. The core never touches ledger transfers directly, so the
+  // same code path settles onchain (a Base USDC vault) or offchain (this ledger).
+
+  const buyerRef = (agentId) => ({ kind: 'agent', id: Number(agentId) });
+  const providerRef = (smbId) => ({ kind: 'smb', id: Number(smbId) });
+
+  // Collateral is read through the backend so the exposure cap is correct wherever
+  // the stake is held; the GMV share stays a read of local engagement history.
+  const stakeBalanceCents = (smbId) => Number(settlementBackend.stakeBalance(providerRef(smbId)));
+  const exposureCapCents = (smbId) => staking.exposureCapCents(
+    stakeBalanceCents(smbId), staking.completedGmvCents(db, smbId),
+  );
+
+  // The escrow handle the backend understands for this engagement.
+  const escrowHandle = (e) => settlementBackend.openEscrow({
+    engagementId: Number(e.id),
+    buyer: buyerRef(e.agent_id),
+    provider: providerRef(e.smb_id),
+    amountMinor: BigInt(Number(e.price_cents)),
+  });
+
+  // Authorization is data: the signatures bound to the agreement hash that /agree
+  // already produced and verified. The ledger backend records them; an onchain
+  // backend has its contract verify them. No new signature scheme is introduced.
+  const authFor = (e) => ({
+    agreementHash: e.agreement_hash || null,
+    signatures: e.agreement_hash ? { buyer: e.buyer_sig, provider: e.provider_sig } : null,
+  });
+
   // ---------- config / plan flags ----------------------------------------------
 
   router.get('/config', (req, res) => {
@@ -292,7 +327,7 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
       const smbId = Number(info.lastInsertRowid);
       getOrCreateAccount(db, 'smb', smbId);
       if (pacta && stakeCents > 0) {
-        staking.depositStake(db, smbId, stakeCents, `initial stake for '${body.name}'`);
+        settlementBackend.stake(providerRef(smbId), BigInt(stakeCents), { memo: `initial stake for '${body.name}'` });
         eventlog.append(db, {
           engagement: 'platform', type: 'StakeChanged',
           payload: { owner: `smb_${smbId}`, delta_cents: stakeCents, cause: 'deposit' },
@@ -345,7 +380,7 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
       throw new ApiError(400, 'amount_cents must be a positive integer');
     }
     withTx(db, () => {
-      staking.depositStake(db, smb.id, amount, `stake top-up for '${smb.name}'`);
+      settlementBackend.stake(providerRef(smb.id), BigInt(amount), { memo: `stake top-up for '${smb.name}'` });
       eventlog.append(db, {
         engagement: 'platform', type: 'StakeChanged',
         payload: { owner: `smb_${smb.id}`, delta_cents: amount, cause: 'deposit' },
@@ -529,7 +564,7 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
     hard.requireParty(req, e);
     const to = assertTransition(e, 'agree');
     if (pacta) {
-      const cap = staking.exposureCapCents(db, e.smb_id);
+      const cap = exposureCapCents(e.smb_id);
       const active = staking.activeExposureCents(db, e.smb_id);
       if (active + Number(e.price_cents) > cap) {
         const fmt = (c) => '$' + (c / 100).toLocaleString('en-US');
@@ -590,18 +625,9 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
     const to = assertTransition(e, 'fund');
     const upfrontCents = Math.round((Number(e.price_cents) * Number(e.upfront_pct)) / 100);
     withTx(db, () => {
-      const agentAcct = getOrCreateAccount(db, 'agent', e.agent_id);
-      const escrowAcct = getOrCreateAccount(db, 'escrow', e.id);
-      if (upfrontCents > 0) {
-        transfer(db, {
-          fromAccountId: agentAcct.id,
-          toAccountId: escrowAcct.id,
-          amountCents: upfrontCents,
-          type: 'escrow_fund',
-          memo: `escrow downpayment (${e.upfront_pct}%) for engagement #${e.id}`,
-          engagementId: e.id,
-        });
-      }
+      settlementBackend.fund(escrowHandle(e), BigInt(upfrontCents), {
+        memo: `escrow downpayment (${e.upfront_pct}%) for engagement #${e.id}`,
+      });
       setState(e.id, to);
       logEvent(e, 'EscrowFunded', { amount_cents: upfrontCents, escrow_account: 'upfront' });
     });
@@ -690,25 +716,19 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
     hard.requireActor(req, 'agent', e.agent_id);
     const to = assertTransition(e, 'approve');
     withTx(db, () => {
-      const agentAcct = getOrCreateAccount(db, 'agent', e.agent_id);
-      const smbAcct = getOrCreateAccount(db, 'smb', e.smb_id);
-      const escrowAcct = getOrCreateAccount(db, 'escrow', e.id);
+      const handle = escrowHandle(e);
+      // Draw the remainder from the buyer into escrow, then release the full
+      // escrow balance to the provider — one transaction, so double release is
+      // structurally impossible.
       const remaining = Number(e.price_cents) - Math.round((Number(e.price_cents) * Number(e.upfront_pct)) / 100);
-      if (remaining > 0) {
-        transfer(db, {
-          fromAccountId: agentAcct.id, toAccountId: escrowAcct.id, amountCents: remaining,
-          type: 'escrow_fund', memo: `remaining ${100 - Number(e.upfront_pct)}% drawn on approval`, engagementId: e.id,
-        });
-      }
-      const escrowBalance = Number(db.prepare('SELECT balance_cents FROM accounts WHERE id = ?').get(escrowAcct.id).balance_cents);
-      if (escrowBalance > 0) {
-        transfer(db, {
-          fromAccountId: escrowAcct.id, toAccountId: smbAcct.id, amountCents: escrowBalance,
-          type: 'escrow_release', memo: `full payment released to SMB for engagement #${e.id}`, engagementId: e.id,
-        });
-      }
+      settlementBackend.fund(handle, BigInt(remaining), {
+        memo: `remaining ${100 - Number(e.upfront_pct)}% drawn on approval`,
+      });
+      const rel = settlementBackend.release(handle, authFor(e), {
+        memo: `full payment released to SMB for engagement #${e.id}`,
+      });
       setState(e.id, to);
-      logEvent(e, 'SettlementApproved', { remaining_drawn_cents: remaining, released_cents: escrowBalance });
+      logEvent(e, 'SettlementApproved', { remaining_drawn_cents: remaining, released_cents: Number(rel.amount_minor) });
     });
     hard.notifyProvider(e.id, 'engagement.completed');
     res.json(engagementPublic(getEngagementOr404(e.id)));
@@ -739,26 +759,36 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
       throw new ApiError(400, "ruling must be one of: release, refund, split");
     }
     withTx(db, () => {
-      const agentAcct = getOrCreateAccount(db, 'agent', e.agent_id);
-      const smbAcct = getOrCreateAccount(db, 'smb', e.smb_id);
-      const escrowAcct = getOrCreateAccount(db, 'escrow', e.id);
-      const held = Number(db.prepare('SELECT balance_cents FROM accounts WHERE id = ?').get(escrowAcct.id).balance_cents);
-      const payout = (toAcct, amount, type, memo) => {
-        if (amount > 0) {
-          transfer(db, { fromAccountId: escrowAcct.id, toAccountId: toAcct.id, amountCents: amount, type, memo, engagementId: e.id });
-        }
-      };
+      const handle = escrowHandle(e);
+      const auth = authFor(e);
+      // Held escrow read through the settlement backend, not the ledger's SQL:
+      // an onchain vault has no accounts row, so the amount must come from the
+      // backend that actually custodies it (src/settlement.js escrowBalance).
+      const held = Number(settlementBackend.escrowBalance(handle));
       if (ruling === 'release') {
-        payout(smbAcct, held, 'escrow_release', `arbiter ruling: release escrow to SMB (engagement #${e.id})`);
+        settlementBackend.release(handle, auth, { memo: `arbiter ruling: release escrow to SMB (engagement #${e.id})` });
       } else if (ruling === 'refund') {
-        payout(agentAcct, held, 'refund', `arbiter ruling: refund escrow to agent (engagement #${e.id})`);
+        settlementBackend.refund(handle, auth, { memo: `arbiter ruling: refund escrow to agent (engagement #${e.id})` });
       } else {
         const agentShare = Math.floor(held / 2); // odd cent goes to the SMB
-        payout(smbAcct, held - agentShare, 'split_release', `arbiter ruling: split — SMB share (engagement #${e.id})`);
-        payout(agentAcct, agentShare, 'split_refund', `arbiter ruling: split — agent refund (engagement #${e.id})`);
+        settlementBackend.split(handle, BigInt(agentShare), BigInt(held - agentShare), auth, {
+          providerMemo: `arbiter ruling: split — SMB share (engagement #${e.id})`,
+          buyerMemo: `arbiter ruling: split — agent refund (engagement #${e.id})`,
+        });
       }
       // Pacta: an adverse ruling costs the SMB part of its stake (skin in the game).
-      const slashed = pacta ? staking.slashForRuling(db, e, ruling) : 0;
+      let slashed = 0;
+      if (pacta) {
+        const penalty = staking.penaltyCentsForRuling(e.price_cents, ruling);
+        if (penalty > 0) {
+          const r = settlementBackend.slash(providerRef(e.smb_id), BigInt(penalty), auth, {
+            beneficiary: buyerRef(e.agent_id),
+            engagementId: Number(e.id),
+            memo: `stake slashed ${staking.SLASH_PCT[ruling]}% for '${ruling}' ruling on engagement #${e.id}`,
+          });
+          slashed = Number(r.amount_minor);
+        }
+      }
       setState(e.id, to, { resolution: ruling });
       logEvent(e, 'RulingIssued', { ruling, escrow_distributed_cents: held, stake_slashed_cents: slashed });
       if (slashed > 0) {
@@ -911,12 +941,13 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
       chain: replayed,
       entries: replayed.checked,
       last_anchor: lastAnchor ? {
+        sequence: Number(lastAnchor.sequence),
         root: lastAnchor.root,
-        from_seq: Number(lastAnchor.from_seq),
-        to_seq: Number(lastAnchor.to_seq),
+        window_start: Number(lastAnchor.window_start),
+        window_end: Number(lastAnchor.window_end),
+        leaf_count: Number(lastAnchor.leaf_count),
         chain_id: Number(lastAnchor.chain_id),
         tx_hash: lastAnchor.tx_hash,
-        heartbeat: Boolean(lastAnchor.heartbeat),
         at: lastAnchor.created_at,
       } : null,
       platform: {
@@ -1001,7 +1032,7 @@ function createApiRouter(db, { pacta = false, registry = null, hardening = {} } 
   router.use((err, req, res, next) => {
     if (err instanceof ApiError || err instanceof LedgerError
         || err instanceof RegistryUnavailableError || err instanceof HardeningError
-        || err instanceof keysmod.KeyError) {
+        || err instanceof SettlementError || err instanceof keysmod.KeyError) {
       return res.status(err.status).json({ error: err.message });
     }
     if (err.type === 'entity.parse.failed') {

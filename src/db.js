@@ -174,30 +174,34 @@ CREATE TABLE IF NOT EXISTS receipt_sigs (
   pacta_sig TEXT NOT NULL
 );
 
--- Phase 0: Merkle roots of the event log anchored to a public chain.
--- heartbeat=1 rows re-anchor the previous root as a liveness signal
--- (from_seq == to_seq == last anchored seq); they carry no new proofs.
+-- Base Readiness (ADR-002): Merkle roots of the event log anchored to Base.
+-- One row per anchored 12h window; always written, even for empty windows
+-- (leaf_count == 0, root == zero root). sequence is the on-chain anchor index
+-- (the contract count). window_start/window_end are unix seconds.
 CREATE TABLE IF NOT EXISTS anchors (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sequence INTEGER NOT NULL,
   root TEXT NOT NULL,
-  from_seq INTEGER NOT NULL,
-  to_seq INTEGER NOT NULL,
+  window_start INTEGER NOT NULL,
+  window_end INTEGER NOT NULL,
+  leaf_count INTEGER NOT NULL,
   chain_id INTEGER NOT NULL,
   tx_hash TEXT NOT NULL,
   block_number INTEGER,
   block_time TEXT,
-  heartbeat INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Phase 0: the simulated chain behind the 'local' anchor adapter — keeps the
--- demo and CI deterministic with no RPC. The 'rpc' adapter replaces this with
--- a real AnchorRegistry contract on an L2 (see contracts/AnchorRegistry.sol).
+-- Base Readiness: the simulated chain behind the 'local' anchor adapter — keeps
+-- the demo and CI deterministic with no RPC. The 'rpc' adapter replaces this
+-- with the real AnchorRegistry on Base (see contracts/AnchorRegistry.sol).
 CREATE TABLE IF NOT EXISTS local_chain (
   block_number INTEGER PRIMARY KEY AUTOINCREMENT,
+  sequence INTEGER NOT NULL,
   root TEXT NOT NULL,
-  from_seq INTEGER NOT NULL,
-  to_seq INTEGER NOT NULL,
+  window_start INTEGER NOT NULL,
+  window_end INTEGER NOT NULL,
+  leaf_count INTEGER NOT NULL,
   sender TEXT NOT NULL,
   tx_hash TEXT NOT NULL,
   block_time TEXT NOT NULL DEFAULT (datetime('now'))

@@ -214,8 +214,9 @@ Independent verification: `packages/verifier` (`pacta-verify receipt.json
 `/verify.html` runs the hash checks client-side in the browser. Anchoring env:
 `ANCHOR_PROVIDER` (`local` default, `rpc` for a real chain), `ANCHOR_RPC_URL`,
 `ANCHOR_CONTRACT_ADDRESS`, `ANCHOR_SIGNER_KEY`, `ANCHOR_CHAIN_ID` (default
-84532 = Base Sepolia), `DEBOUNCE_SECONDS=300`, `HEARTBEAT_HOURS=24`,
-`ALERT_AFTER_MINUTES=30`, `PLATFORM_SIGNING_KEY`.
+8453 = Base mainnet; 84532 = Base Sepolia), `ANCHOR_WINDOW_HOURS=12`,
+`ALERT_AFTER_MINUTES=30`, `PLATFORM_SIGNING_KEY`. The service anchors one
+Merkle root per window and always emits, so empty windows carry `leafCount = 0`.
 
 ## MCP server
 

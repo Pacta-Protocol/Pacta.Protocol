@@ -11,8 +11,10 @@
 //   canonical JSON      RFC 8785 (JCS): sorted keys, JSON.stringify scalars
 //   entry_hash          SHA-256( prev_hash_utf8 || canonical({seq, engagement, type, payload, at}) )
 //   agreement_hash      SHA-256( canonical(agreement) ), agreement schema pacta/agreement@1
-//   Merkle tree         SHA-256 over raw 32-byte values, leaves in seq order,
-//                       odd level duplicates its last node, single leaf = root
+//   Merkle tree         domain-separated SHA-256: leaf = H(0x00 || entry_hash),
+//                       node = H(0x01 || left || right), leaves in seq order,
+//                       odd level duplicates its last node, single leaf's value
+//                       is the root, empty window = zero root
 //   signatures          EIP-712, domain {name:"Pacta", version:"1", chainId},
 //                       types Agreement(bytes32 agreementHash,string role,string nonce)
 //                       and LogEntry(bytes32 entryHash); sig format r||s||v
@@ -50,15 +52,21 @@ const entryHashOf = (prevHash, entry) => `0x${crypto.createHash('sha256')
 
 const agreementHashOf = (agreement) => sha256hex(canonicalize(agreement));
 
-// ---------- Merkle -------------------------------------------------------------
+// ---------- Merkle (domain-separated) ------------------------------------------
 
-const pairHash = (a, b) => `0x${crypto.createHash('sha256')
+const LEAF_PREFIX = Buffer.from([0x00]);
+const NODE_PREFIX = Buffer.from([0x01]);
+const leafHash = (entryHash) => `0x${crypto.createHash('sha256')
+  .update(LEAF_PREFIX).update(Buffer.from(strip0x(entryHash), 'hex')).digest('hex')}`;
+const nodeHash = (a, b) => `0x${crypto.createHash('sha256')
+  .update(NODE_PREFIX)
   .update(Buffer.from(strip0x(a), 'hex')).update(Buffer.from(strip0x(b), 'hex')).digest('hex')}`;
 
-function walkProof(leaf, proof) {
-  let acc = leaf;
+// Start from the leaf's own domain-separated value, then fold in each sibling.
+function walkProof(entryHash, proof) {
+  let acc = leafHash(entryHash);
   for (const step of proof) {
-    acc = step.pos === 'right' ? pairHash(acc, step.hash) : pairHash(step.hash, acc);
+    acc = step.pos === 'right' ? nodeHash(acc, step.hash) : nodeHash(step.hash, acc);
   }
   return acc;
 }
@@ -171,10 +179,15 @@ function verifyReceipt(receipt, { platformPubkey, chainId } = {}) {
   return { pass: checks.every((c) => c.status !== 'FAIL'), checks };
 }
 
-// 5. On-chain check: fetch the Anchored event via RPC and confirm root, range
-// and sender. Anchors with chain_id 0 are simulated local-development anchors
-// and cannot be checked against a public chain.
-const ANCHORED_TOPIC = () => toHex(keccak_256(Buffer.from('Anchored(bytes32,uint64,uint64,address)', 'utf8')));
+// 5. On-chain check: fetch the RootAnchored event via RPC and confirm the root,
+// sequence and window match the receipt. Anchors with chain_id 0 are simulated
+// local-development anchors and cannot be checked against a public chain.
+//   RootAnchored(uint256 indexed sequence, bytes32 indexed root,
+//                uint64 windowStart, uint64 windowEnd, uint32 leafCount)
+// topics: [sig, sequence, root]; data: windowStart | windowEnd | leafCount.
+const ROOT_ANCHORED_TOPIC = () => toHex(keccak_256(
+  Buffer.from('RootAnchored(uint256,bytes32,uint64,uint64,uint32)', 'utf8'),
+));
 
 async function checkAnchorOnChain(anchor, { rpcUrl, senderAddress } = {}) {
   if (!anchor) return { name: 'anchor_on_chain', status: 'SKIP', detail: 'receipt has no anchor yet' };
@@ -191,20 +204,39 @@ async function checkAnchorOnChain(anchor, { rpcUrl, senderAddress } = {}) {
   if (data.error || !data.result) {
     return { name: 'anchor_on_chain', status: 'FAIL', detail: `transaction ${anchor.tx_hash} not found on chain` };
   }
-  const log = (data.result.logs || []).find((l) => (l.topics || [])[0] === ANCHORED_TOPIC());
-  if (!log) return { name: 'anchor_on_chain', status: 'FAIL', detail: 'transaction has no Anchored event' };
-  const root = `0x${strip0x(log.topics[1])}`;
-  const fromSeq = Number(BigInt(`0x${strip0x(log.data).slice(0, 64)}`));
-  const toSeq = Number(BigInt(`0x${strip0x(log.data).slice(64, 128)}`));
-  const sender = `0x${strip0x(log.topics[2]).slice(-40)}`;
+  const log = (data.result.logs || []).find((l) => (l.topics || [])[0] === ROOT_ANCHORED_TOPIC());
+  if (!log) return { name: 'anchor_on_chain', status: 'FAIL', detail: 'transaction has no RootAnchored event' };
+  const sequence = Number(BigInt(log.topics[1]));
+  const root = `0x${strip0x(log.topics[2])}`;
+  const windowStart = Number(BigInt(`0x${strip0x(log.data).slice(0, 64)}`));
+  const windowEnd = Number(BigInt(`0x${strip0x(log.data).slice(64, 128)}`));
+  const leafCount = Number(BigInt(`0x${strip0x(log.data).slice(128, 192)}`));
   if (root !== anchor.root) return { name: 'anchor_on_chain', status: 'FAIL', detail: `on-chain root ${root} ≠ receipt root ${anchor.root}` };
-  if (fromSeq !== Number(anchor.from_seq) || toSeq !== Number(anchor.to_seq)) {
-    return { name: 'anchor_on_chain', status: 'FAIL', detail: `on-chain range ${fromSeq}..${toSeq} ≠ receipt range ${anchor.from_seq}..${anchor.to_seq}` };
+  if (anchor.sequence != null && sequence !== Number(anchor.sequence)) {
+    return { name: 'anchor_on_chain', status: 'FAIL', detail: `on-chain sequence ${sequence} ≠ receipt sequence ${anchor.sequence}` };
   }
-  if (senderAddress && sender.toLowerCase() !== senderAddress.toLowerCase()) {
-    return { name: 'anchor_on_chain', status: 'FAIL', detail: `anchor sent by ${sender}, expected ${senderAddress}` };
+  if (windowStart !== Number(anchor.window_start) || windowEnd !== Number(anchor.window_end)) {
+    return { name: 'anchor_on_chain', status: 'FAIL', detail: `on-chain window ${windowStart}..${windowEnd} ≠ receipt window ${anchor.window_start}..${anchor.window_end}` };
   }
-  return { name: 'anchor_on_chain', status: 'PASS', detail: `Anchored(root, ${fromSeq}..${toSeq}) confirmed on chain ${anchor.chain_id}${senderAddress ? ` from ${senderAddress}` : ''}` };
+  if (anchor.leaf_count != null && leafCount !== Number(anchor.leaf_count)) {
+    return { name: 'anchor_on_chain', status: 'FAIL', detail: `on-chain leafCount ${leafCount} ≠ receipt leafCount ${anchor.leaf_count}` };
+  }
+  // The contract enforces msg.sender == anchorer, so an anchorer address is an
+  // extra cross-check for the caller, not a trust boundary.
+  let senderNote = '';
+  if (senderAddress) {
+    const tx = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionByHash', params: [anchor.tx_hash] }),
+    }).then((r) => r.json());
+    const from = tx.result && tx.result.from;
+    if (from && from.toLowerCase() !== senderAddress.toLowerCase()) {
+      return { name: 'anchor_on_chain', status: 'FAIL', detail: `anchor sent by ${from}, expected ${senderAddress}` };
+    }
+    senderNote = ` from ${senderAddress}`;
+  }
+  return { name: 'anchor_on_chain', status: 'PASS', detail: `RootAnchored(#${sequence}, root, ${windowStart}..${windowEnd}, ${leafCount} leaves) confirmed on chain ${anchor.chain_id}${senderNote}` };
 }
 
 module.exports = {

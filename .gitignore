@@ -1,6 +1,16 @@
 node_modules/
 data/
+build/
+cache/
 test-results/
 playwright-report/
 .DS_Store
 .claude/
+
+# Primos Framework — session/orchestration artifacts, never commit
+.primos/
+
+# Secrets — deployment keys, never commit
+.env
+.env.*
+*.key

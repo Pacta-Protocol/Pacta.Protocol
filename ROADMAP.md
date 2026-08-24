@@ -42,13 +42,17 @@ Transparency pattern applied to agreements, not an on-chain lifecycle:
   disclosed launch default; self-custody is a one-call upgrade. Shipped on `main`.
 - [x] Hash-chained append-only event log guarded by triggers; signed receipts
   with Merkle inclusion proofs. Shipped on `main`.
-- [x] Public anchoring through an event-only, permissionless `AnchorRegistry`
-  contract; `local` adapter by default, `rpc` adapter for any EVM chain.
+- [x] Public anchoring through an event-only `AnchorRegistry` contract written by
+  a single authorized anchorer, one domain-separated Merkle root per 12h window,
+  always emitting (empty windows included); `local` adapter by default, `rpc`
+  adapter for Base/any EVM chain ([ADR-002](docs/adr/002-windowed-anchoring-base.md)).
   Shipped on `main`.
 - [x] An independent open-source verifier (`packages/verifier`, plus a browser
   page) that proves history intact, or tampering, without Pacta. Shipped on `main`.
-- [ ] Anchor to a public L2 testnet (Base Sepolia) once a funded signer wallet
-  and RPC are provisioned; add receipts-trie verification to the indexer.
+- [ ] Deploy `AnchorRegistry` to **Base mainnet** and run the anchoring loop
+  against it once a funded anchorer wallet and RPC are provisioned
+  (`scripts/deploy-anchor-registry.js` is ready); add receipts-trie verification
+  to the indexer.
 
 Deliberately out of scope: custody of funds stays on the internal ledger. Phase
 1 (a minimal non-custodial escrow vault) is designed but gated behind an

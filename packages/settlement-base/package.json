@@ -1,0 +1,23 @@
+{
+  "name": "@pacta/settlement-base",
+  "version": "0.1.0",
+  "description": "Reference on-chain settlement backend for the Pacta protocol: a USDC EscrowVault on Base. Registers itself as SETTLEMENT_BACKEND=base-escrow-vault; the core never imports it.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test.js",
+    "compile": "node scripts/compile.js",
+    "deploy": "node scripts/deploy.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.3.0",
+    "@noble/hashes": "^2.3.0"
+  },
+  "devDependencies": {
+    "solc": "0.8.24"
+  }
+}

@@ -86,15 +86,23 @@ required to run.
 | `PLATFORM_KEY_FILE` | `data/platform-key` | where the platform key is read/written |
 | `ANCHOR_PROVIDER` | `local` (`rpc` if `ANCHOR_RPC_URL` set) | anchoring adapter |
 | `ANCHOR_RPC_URL` / `ANCHOR_CONTRACT_ADDRESS` / `ANCHOR_SIGNER_KEY` | none | `rpc` anchoring to a real EVM chain |
-| `ANCHOR_CHAIN_ID` | `84532` (Base Sepolia) | EIP-712 domain + anchor chain |
-| `DEBOUNCE_SECONDS` / `HEARTBEAT_HOURS` / `ALERT_AFTER_MINUTES` | 300 / 24 / 30 | anchor worker cadence |
+| `ANCHOR_CHAIN_ID` | `8453` (Base mainnet) | EIP-712 domain + anchor tx chain (`84532` = Base Sepolia) |
+| `ANCHOR_WINDOW_HOURS` / `ALERT_AFTER_MINUTES` | 12 / 30 | anchor window length / failure-alert threshold |
 | `ALERT_WEBHOOK_URL` | none | anchor-failure alerts |
 | `ANCHOR_AUTOSTART` | on (`0` disables) | in-process anchor worker |
 
-To anchor to a real chain: deploy `contracts/AnchorRegistry.sol` to your L2,
-fund the `ANCHOR_SIGNER_KEY` wallet, and set `ANCHOR_RPC_URL` +
-`ANCHOR_CONTRACT_ADDRESS`. Verify a receipt end to end with
-`packages/verifier` (`pacta-verify receipt.json --rpc <url>`).
+To anchor to Base: deploy `contracts/AnchorRegistry.sol` with
+`DEPLOY_NETWORK=base-sepolia|base-mainnet DEPLOY_SIGNER_KEY=0x… node scripts/deploy-anchor-registry.js`.
+The script is network-aware (default `base-mainnet`): it picks the public RPC and
+the right Basescan explorer for you (override the RPC with `DEPLOY_RPC_URL`),
+compiles with a pinned solc, and prints the address plus verification steps —
+see the script header, ADR-002, and `.primos/blockers-wp1.md` for the exact
+copy-paste commands for both networks. Then fund the `ANCHOR_SIGNER_KEY` anchorer
+wallet with a little ETH and set `ANCHOR_PROVIDER=rpc`, `ANCHOR_RPC_URL`,
+`ANCHOR_CONTRACT_ADDRESS`, and `ANCHOR_CHAIN_ID` (`84532` Sepolia / `8453`
+mainnet). The service anchors one Merkle root per `ANCHOR_WINDOW_HOURS` window,
+always emitting — empty windows go out with `leafCount = 0`. Verify a receipt end
+to end with `packages/verifier` (`pacta-verify receipt.json --rpc <url>`).
 
 ## Notes
 

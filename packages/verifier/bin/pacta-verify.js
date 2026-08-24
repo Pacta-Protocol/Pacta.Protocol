@@ -3,7 +3,7 @@
 // pacta-verify - verify a Pacta receipt without trusting Pacta.
 //
 //   pacta-verify receipt.json [--pubkey 0x04…] [--rpc https://…] [--sender 0x…]
-//                             [--chain-id 84532] [--json]
+//                             [--chain-id 8453] [--json]
 //
 // receipt.json is either a single receipt { entry, merkle_proof, anchor,
 // pacta_sig } or a full proof bundle from GET /api/engagements/:id/proof
@@ -34,7 +34,7 @@ async function main() {
   const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
   const receipts = Array.isArray(doc.receipts) ? doc.receipts : [doc];
   const platformPubkey = args.pubkey || doc.platform_pubkey || null;
-  const chainId = Number(args.chain_id || (doc.eip712_domain && doc.eip712_domain.chain_id) || 84532);
+  const chainId = Number(args.chain_id || (doc.eip712_domain && doc.eip712_domain.chain_id) || 8453);
 
   let allPass = true;
   const results = [];

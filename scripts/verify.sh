@@ -49,6 +49,13 @@ invariant_ok() { # description
   assert_eq "$(field '.ok')" "true" "ledger invariant holds — $1"
 }
 
+echo "== 0. Chain neutrality: no core file imports a wallet/RPC/chain library ======"
+if node scripts/check-neutrality.js; then
+  echo "  PASS: core is chain-neutral"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: a core file imports a chain library"; FAIL=$((FAIL + 1))
+fi
+
 echo "== 1. Fresh start: DB deleted, app starts, seed data loads =================="
 rm -f "$DB" "$DB-wal" "$DB-shm"
 DB_PATH="$DB" PORT="$PORT" node server.js >/dev/null 2>&1 &

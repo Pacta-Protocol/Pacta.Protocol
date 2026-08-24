@@ -103,10 +103,11 @@ Key design decisions and their rationale.
     contract would only notarize what Pacta's key relays (the sole-writer problem).
     Instead: canonical agreements (RFC 8785 + SHA-256, `agreement_hash` as the
     universal ID), dual EIP-712 signatures, a hash-chained append-only `event_log`
-    guarded by triggers, Merkle roots anchored through an event-only permissionless
-    contract, and receipts an independent verifier can check with zero backend
-    imports. The guarantee is detectability, not prevention - and that is stated
-    everywhere it matters.
+    guarded by triggers, domain-separated Merkle roots anchored through an
+    event-only contract written by a single authorized anchorer (ADR-002), and
+    receipts an independent verifier can check with zero backend imports. The
+    guarantee is detectability, not prevention - and that is stated everywhere it
+    matters.
 
 22. **Anchoring is an adapter, like the registry.** The `local` adapter (default)
     simulates the chain in a table so demos and CI stay deterministic with no
@@ -114,7 +115,10 @@ Key design decisions and their rationale.
     itself (minimal RLP, no web3 dependency) against any EVM chain. Selection
     mirrors `src/registry.js`: `ANCHOR_RPC_URL` implies rpc, `ANCHOR_PROVIDER`
     forces. Anchors with `chain_id: 0` are self-labeled as simulated - the
-    verifier refuses to pretend they are on a public chain.
+    verifier refuses to pretend they are on a public chain. Cadence is one fixed
+    window (`ANCHOR_WINDOW_HOURS`, default 12) that always emits, empty windows
+    included, so there is a single code path and a missing on-chain sequence is
+    the liveness alarm (ADR-002).
 
 23. **Custodial signing keys are the launch default, disclosed and upgradeable.**
     SMBs (and the demo UI) cannot be asked to manage secp256k1 keys on day one;

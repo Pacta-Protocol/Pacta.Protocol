@@ -54,7 +54,18 @@ const hashOf = (value) => sha256hex(canonicalize(value));
 // Build the canonical agreement object for an engagement. Pure data in, pure
 // data out: callers pass the engagement row, its steps, and both parties'
 // registered public keys.
-function canonicalAgreement({ engagement, steps, buyerPubkey, providerPubkey }) {
+//
+// `settlement` is an OPTIONAL opaque block. When an onchain settlement backend
+// is in use (e.g. base-escrow-vault), it carries the buyer/provider/arbiter EVM
+// addresses so those addresses live INSIDE the agreement_hash — the property
+// that makes "the contract verifies signatures" meaningful (Base Readiness
+// Spec, "Address binding"). The core treats it as opaque data and never reads
+// chain concepts from it. When absent it is `undefined`, and because
+// canonicalize() drops undefined keys the output is byte-identical to an
+// agreement with no settlement block — so the ledger flow and every existing
+// signature/hash are unchanged. The block's exact shape is owned and documented
+// by the adapter package (@pacta/settlement-base README, "Address binding").
+function canonicalAgreement({ engagement, steps, buyerPubkey, providerPubkey, settlement } = {}) {
   const price = Number(engagement.price_cents);
   const downBps = Number(engagement.upfront_pct) * 100;
   return {
@@ -71,6 +82,7 @@ function canonicalAgreement({ engagement, steps, buyerPubkey, providerPubkey }) 
       proof_kind: s.verification_kind || 'none',
     })),
     dispute_rules_hash: sha256hex(DISPUTE_RULES_TEXT),
+    settlement: settlement || undefined,
     nonce: engagement.nonce,
   };
 }

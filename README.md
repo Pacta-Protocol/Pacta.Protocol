@@ -191,12 +191,17 @@ Transparency pattern applied to agreements
   entry, in the same transaction, to an append-only log where each entry
   hashes its predecessor; database triggers forbid UPDATE/DELETE. Evidence
   bytes and free text never enter the log — only hashes and metadata.
-- **Public anchoring**: a hybrid cadence (debounced batching + daily
-  heartbeat) publishes Merkle roots through an event-only, permissionless
-  ~10-line contract ([contracts/AnchorRegistry.sol](contracts/AnchorRegistry.sol)).
-  The default `local` adapter keeps demos and CI deterministic; the `rpc`
-  adapter sends real transactions to any EVM chain (`ANCHOR_RPC_URL`,
-  `ANCHOR_CONTRACT_ADDRESS`, `ANCHOR_SIGNER_KEY`).
+- **Public anchoring on Base**: every 12 hours (`ANCHOR_WINDOW_HOURS`, default
+  12) the anchoring service publishes one Merkle root of the window's log entries
+  to an `AnchorRegistry` contract on **Base** ([contracts/AnchorRegistry.sol](contracts/AnchorRegistry.sol)),
+  written by a single authorized anchorer
+  ([ADR-002](docs/adr/002-windowed-anchoring-base.md)). It **always emits, even
+  for empty windows** (`leafCount = 0`, zero root), so a gap in the on-chain
+  sequence is itself the liveness alarm — a zero-leaf anchor means "no activity",
+  never hidden activity. The default `local` adapter keeps demos and CI
+  deterministic; the `rpc` adapter sends real `anchor(bytes32,uint64,uint64,uint32)`
+  transactions to any EVM chain (`ANCHOR_RPC_URL`, `ANCHOR_CONTRACT_ADDRESS`,
+  `ANCHOR_SIGNER_KEY`, `ANCHOR_CHAIN_ID` default `8453`).
 - **Receipts + open verifier**: both parties get signed receipts with Merkle
   paths to anchored roots (`GET /api/engagements/{id}/proof`). The
   [`pacta-verify`](packages/verifier) CLI re-implements every formula with
@@ -204,6 +209,111 @@ Transparency pattern applied to agreements
   without Pacta's cooperation; `/verify.html` runs the hash checks in the
   browser. Custody of funds intentionally stays on the internal ledger
   (Phase 1 is a designed, triggered roadmap item — see the ADR).
+
+### Merkle construction (precise enough to reimplement)
+
+The anchored root is a **domain-separated** binary SHA-256 Merkle tree over the
+window's `entry_hash` values ([src/merkle.js](src/merkle.js), reimplemented
+independently in [packages/verifier/lib.js](packages/verifier/lib.js)):
+
+- **Leaves** are the 32-byte `entry_hash` values of the entries whose timestamp
+  falls in `(windowStart, windowEnd]`, ordered by `seq`.
+- **Leaf value** = `SHA-256(0x00 || entry_hash_bytes)` — the raw 32 bytes,
+  prefixed with a single `0x00` domain byte.
+- **Internal node** = `SHA-256(0x01 || left_value || right_value)` over the two
+  32-byte child values, prefixed with `0x01`.
+- **Odd level**: duplicate the last node before pairing.
+- **Single leaf**: the tree's root is that leaf's value,
+  `SHA-256(0x00 || entry_hash_bytes)` — with domain separation a raw
+  `entry_hash` is never itself a root.
+- **Empty window**: the root is the zero root (32 zero bytes).
+
+The on-chain event is
+`RootAnchored(uint256 sequence, bytes32 root, uint64 windowStart, uint64 windowEnd, uint32 leafCount)`;
+`sequence` and `root` are indexed, the rest sit in `data`. A proof is an array of
+`{ hash, pos }` sibling values walked leaf→root: start the accumulator at the
+leaf value `SHA-256(0x00 || entry_hash)`, then fold in each sibling with
+`SHA-256(0x01 || …)`, left/right per `pos`.
+
+### On-chain deployment (Base)
+
+| | |
+|---|---|
+| Network | Base mainnet (chain id `8453`) |
+| Contract | `{{ANCHOR_REGISTRY_ADDRESS}}` |
+| Basescan | https://basescan.org/address/{{ANCHOR_REGISTRY_ADDRESS}} |
+| First anchor tx | https://basescan.org/tx/{{ANCHOR_FIRST_TX}} |
+| Cadence | one anchor every 12 hours, empty windows included (`leafCount = 0`) |
+
+The `{{…}}` placeholders are filled in at deployment. Until then the anchoring
+service runs against the deterministic `local` adapter and this README, the docs
+site, and the homepage carry the same placeholders — a mainnet claim never ships
+ahead of the mainnet deployment. Rotate the anchorer key with `setAnchorer`
+(see [ADR-002](docs/adr/002-windowed-anchoring-base.md)).
+
+### Verify it yourself
+
+Anyone can confirm an agreement's history against Base **without Pacta** — no
+account, no Pacta API, only a public RPC. From a clean clone:
+
+```bash
+git clone https://github.com/Pacta-Protocol/Pacta.Protocol.git
+cd Pacta.Protocol && npm install
+
+# 1. Run one full engagement end to end (throwaway marketplace, self-verifying).
+npm run demo:agent
+
+# 2. Re-open that engagement's database and fetch its signed receipt bundle.
+DB_PATH=data/agent-demo.db PACTA=1 PORT=3220 node server-pacta.js &
+curl -s http://localhost:3220/api/engagements/1/proof > receipt.json
+
+# 3. Verify the receipts — recomputes every hash and Merkle path, zero backend imports.
+node packages/verifier/bin/pacta-verify.js receipt.json
+
+# 4. Confirm the anchored root against Base itself, over a public RPC. The
+#    anchoring tx hash is inside the receipt; --rpc turns on the on-chain check.
+node packages/verifier/bin/pacta-verify.js receipt.json --rpc https://mainnet.base.org
+```
+
+The verifier recomputes the hash chain, the agreement hash, and the Merkle path
+client-side, then (with `--rpc`) reads the `RootAnchored` event from Base via the
+anchoring tx recorded in the receipt and compares. Steps 1–3 pass today; the
+on-chain check in step 4 activates once the registry is deployed — until then the
+demo anchors against the deterministic `local` adapter (`chain_id 0`) and that
+check reports `SKIP`, never a false pass. A browser version that needs no install
+is at **[pactaprotocol.org/verify.html](https://pactaprotocol.org/verify.html)**
+(and locally at `/verify.html`). If verification required trusting a Pacta API,
+the whole exercise would be pointless — so it does not.
+
+## Settlement backends
+
+Escrow, collateral and slashing sit behind one interface,
+[`SettlementBackend`](src/settlement.js), so the core never moves money directly
+and never imports a chain library. Backend selection is configuration, not code:
+
+```bash
+SETTLEMENT_BACKEND=ledger              # default — internal double-entry ledger
+SETTLEMENT_BACKEND=base-escrow-vault   # reference onchain backend (USDC on Base)
+```
+
+- **`ledger`** (default) is the internal double-entry ledger in integer cents.
+  It requires **no wallet, no chain, and no crypto dependencies**: the full test
+  suite passes with zero blockchain packages installed. A CI neutrality check
+  fails the build if any core file imports viem, ethers, or another chain/RPC
+  library.
+- **`base-escrow-vault`** is the reference onchain implementation — a USDC
+  `EscrowVault` on Base — shipped as a separate package
+  ([packages/settlement-base](packages/settlement-base)) that registers itself
+  via `registerSettlementBackend(id, factory)`. The core does not depend on it;
+  uninstalling the package changes nothing on the ledger backend.
+
+Both backends satisfy the same interface and return the **same
+`SettlementReceipt`** shape, with an optional `onchain` block (tx hash, chain id,
+block number) that is `null` on the ledger. Callers, and the MCP tools above,
+never branch on backend type — an agent cannot tell which backend is running.
+Adding a third settlement network means implementing the interface in a new
+package and touching no core file. This is the "Base first, with a clean seam for
+others" design: Base is the reference settlement network, not a dependency.
 
 ## Tests
 

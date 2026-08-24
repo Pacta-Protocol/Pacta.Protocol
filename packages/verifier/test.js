@@ -82,3 +82,16 @@ test('canonicalize is order-independent (RFC 8785)', () => {
   assert.strictEqual(lib.canonicalize({ b: 1, a: 2 }), lib.canonicalize({ a: 2, b: 1 }));
   assert.notStrictEqual(lib.canonicalize({ a: 1 }), lib.canonicalize({ a: 2 }));
 });
+
+test('merkle walkProof is domain-separated (leaf 0x00, node 0x01)', () => {
+  const crypto = require('node:crypto');
+  const buf = (h) => Buffer.from(h.replace(/^0x/, ''), 'hex');
+  const leafH = (e) => `0x${crypto.createHash('sha256').update(Buffer.from([0])).update(buf(e)).digest('hex')}`;
+  const nodeH = (a, b) => `0x${crypto.createHash('sha256').update(Buffer.from([1])).update(buf(a)).update(buf(b)).digest('hex')}`;
+  const e0 = lib.sha256hex('e0');
+  const e1 = lib.sha256hex('e1');
+  const root = nodeH(leafH(e0), leafH(e1)); // two-leaf tree, e0 on the left
+  // The accumulator must start as the leaf's own value H(0x00 || e0), not e0.
+  assert.strictEqual(lib.walkProof(e0, [{ hash: leafH(e1), pos: 'right' }]), root);
+  assert.notStrictEqual(lib.walkProof(e0, [{ hash: leafH(lib.sha256hex('evil')), pos: 'right' }]), root);
+});

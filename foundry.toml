@@ -1,0 +1,13 @@
+# Foundry config for the EscrowVault security regression tests only. This does
+# NOT affect the Node/CommonJS app or `npm test`; it exists so `forge test` can
+# run the adversarial exploit regressions (the three findings Aria-2 confirmed)
+# on a real EVM. See packages/settlement-base/README.md, "Security regressions".
+[profile.default]
+src = "contracts"
+test = "contracts/test"
+out = "contracts/out"
+libs = []
+solc = "0.8.24"
+optimizer = true
+optimizer_runs = 200
+evm_version = "cancun"
