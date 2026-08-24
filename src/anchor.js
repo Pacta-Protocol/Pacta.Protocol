@@ -349,8 +349,27 @@ function createAnchorWorker(db, { adapter, env = process.env, onAlert } = {}) {
     }
   };
 
+  let firstTick = true;
   async function tick() {
     try {
+      // On boot/restart, don't emit a zero-leaf anchor for a partial window:
+      // anchor now only if there is pending content, or a full window has elapsed
+      // since the last anchor. The 12h empty-window heartbeat still fires on the
+      // periodic tick; this only stops every restart from minting an empty anchor.
+      if (firstTick) {
+        firstTick = false;
+        const nowSec = Math.floor(Date.now() / 1000);
+        const lastEnd = db.prepare('SELECT MAX(window_end) AS e FROM anchors').get().e;
+        const since = lastEnd != null ? Number(lastEnd) : -1;
+        const pending = db.prepare('SELECT at FROM event_log').all()
+          .filter((r) => unixSeconds(r.at) > since).length;
+        const windowElapsed = lastEnd != null && (nowSec - Number(lastEnd)) >= windowMs / 1000;
+        if (pending === 0 && !windowElapsed) {
+          timer = setTimeout(tick, windowMs);
+          if (timer.unref) timer.unref();
+          return;
+        }
+      }
       const done = await anchorPending(db, a);
       if (done) {
         console.log(`[anchor] window ${done.window_start}..${done.window_end} → seq ${done.sequence}, ${done.leaf_count} leaves, root ${done.root.slice(0, 18)}… (${a.name}, tx ${done.tx_hash.slice(0, 18)}…)`);

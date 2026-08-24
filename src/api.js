@@ -936,20 +936,26 @@ function createApiRouter(db, { pacta = false, registry = null, settlement = null
   // Additive read-only route (GOVERNANCE carve-out).
   router.get('/integrity', (req, res) => {
     const replayed = eventlog.replay(db);
+    const anchorView = (a) => (a ? {
+      sequence: Number(a.sequence),
+      root: a.root,
+      window_start: Number(a.window_start),
+      window_end: Number(a.window_end),
+      leaf_count: Number(a.leaf_count),
+      chain_id: Number(a.chain_id),
+      tx_hash: a.tx_hash,
+      at: a.created_at,
+    } : null);
     const lastAnchor = db.prepare('SELECT * FROM anchors ORDER BY id DESC LIMIT 1').get();
+    // The most recent anchor that actually covers log entries (leaf_count > 0).
+    // Empty-window heartbeat anchors are real but carry no content, so surfaces
+    // that want to show "what's anchored" should prefer this one.
+    const lastContentAnchor = db.prepare('SELECT * FROM anchors WHERE leaf_count > 0 ORDER BY id DESC LIMIT 1').get();
     res.json({
       chain: replayed,
       entries: replayed.checked,
-      last_anchor: lastAnchor ? {
-        sequence: Number(lastAnchor.sequence),
-        root: lastAnchor.root,
-        window_start: Number(lastAnchor.window_start),
-        window_end: Number(lastAnchor.window_end),
-        leaf_count: Number(lastAnchor.leaf_count),
-        chain_id: Number(lastAnchor.chain_id),
-        tx_hash: lastAnchor.tx_hash,
-        at: lastAnchor.created_at,
-      } : null,
+      last_anchor: anchorView(lastAnchor),
+      last_content_anchor: anchorView(lastContentAnchor),
       platform: {
         pubkey: keysmod.platformPubkey(),
         // The address that actually writes anchors: the anchoring adapter's sender
