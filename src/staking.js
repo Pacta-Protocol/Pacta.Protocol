@@ -3,7 +3,12 @@
 //   - vetted  ⇔  stake balance > 0
 //   - exposure cap = CAP_STAKE_MULTIPLE × stake + CAP_GMV_SHARE × completed GMV
 //   - losing a dispute slashes the stake in favor of the agent
-const { getOrCreateAccount, getAccount, mint, transfer } = require('./ledger');
+//
+// This module is the collateral *policy* (percentages, exposure formula, vetting
+// flag) plus the deposit primitive. Moving collateral out — the slash itself — is
+// a settlement operation and lives behind the SettlementBackend (src/settlement.js),
+// so it works the same whether the stake sits in this ledger or in an onchain vault.
+const { getOrCreateAccount, getAccount, mint } = require('./ledger');
 
 const CAP_STAKE_MULTIPLE = 5;
 const CAP_GMV_SHARE = 0.5; // half of lifetime completed GMV counts toward the cap
@@ -34,9 +39,12 @@ function activeExposureCents(db, smbId) {
   ).get(smbId, ...ACTIVE_STATES).s);
 }
 
-function exposureCapCents(db, smbId) {
-  return CAP_STAKE_MULTIPLE * stakeBalanceCents(db, smbId)
-    + Math.floor(CAP_GMV_SHARE * completedGmvCents(db, smbId));
+// The graduated cap, as a pure formula. The stake balance is supplied by the
+// caller (from the settlement backend) so the cap is correct no matter where the
+// collateral is held; the GMV share is read from the engagement history, which is
+// backend-independent.
+function exposureCapCents(stakeCents, gmvCents) {
+  return CAP_STAKE_MULTIPLE * stakeCents + Math.floor(CAP_GMV_SHARE * gmvCents);
 }
 
 // Money enters the stake from outside the platform (a simulated bank deposit),
@@ -48,34 +56,16 @@ function depositStake(db, smbId, amountCents, memo) {
   db.prepare('UPDATE smbs SET vetted = 1 WHERE id = ?').run(smbId);
 }
 
-// Compensate the agent from the SMB's stake after an adverse ruling.
-// Must be called inside withTx (shares the ruling's transaction).
-// Returns the amount actually slashed.
-function slashForRuling(db, engagement, ruling) {
+// The penalty an adverse ruling costs the provider, as a policy amount in cents
+// (capped to the available balance by the settlement backend that executes it).
+function penaltyCentsForRuling(priceCents, ruling) {
   const pct = SLASH_PCT[ruling] || 0;
   if (pct === 0) return 0;
-  const stakeAcct = getOrCreateAccount(db, 'stake', engagement.smb_id);
-  const balance = Number(db.prepare('SELECT balance_cents FROM accounts WHERE id = ?').get(stakeAcct.id).balance_cents);
-  const penalty = Math.min(balance, Math.round((Number(engagement.price_cents) * pct) / 100));
-  if (penalty > 0) {
-    const agentAcct = getOrCreateAccount(db, 'agent', engagement.agent_id);
-    transfer(db, {
-      fromAccountId: stakeAcct.id,
-      toAccountId: agentAcct.id,
-      amountCents: penalty,
-      type: 'stake_slash',
-      memo: `stake slashed ${pct}% for '${ruling}' ruling on engagement #${engagement.id}`,
-      engagementId: engagement.id,
-    });
-  }
-  if (balance - penalty <= 0) {
-    db.prepare('UPDATE smbs SET vetted = 0 WHERE id = ?').run(engagement.smb_id);
-  }
-  return penalty;
+  return Math.round((Number(priceCents) * pct) / 100);
 }
 
 module.exports = {
   CAP_STAKE_MULTIPLE, CAP_GMV_SHARE, SLASH_PCT, ACTIVE_STATES,
   stakeBalanceCents, isVetted, completedGmvCents, activeExposureCents, exposureCapCents,
-  depositStake, slashForRuling,
+  depositStake, penaltyCentsForRuling,
 };

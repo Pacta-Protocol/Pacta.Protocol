@@ -1,24 +1,36 @@
 'use strict';
-// Phase 0 (ADR-001): public anchoring of event-log Merkle roots.
+// Base Readiness (ADR-002): windowed anchoring of event-log Merkle roots.
 //
-// Adapter contract (mirrors src/registry.js): an adapter exposes
+// Every window (default 12h) the service publishes ONE Merkle root covering the
+// log entries whose timestamp falls in (windowStart, windowEnd]. It ALWAYS
+// emits, even for an empty window (leafCount 0, zero root): one code path, no
+// skip logic, no separate heartbeat. A gap in the on-chain sequence is itself
+// the alarm. Windows are contiguous - each starts where the last one ended -
+// so there are no gaps and, because a window is only recorded after a
+// successful anchor, no double-anchoring across retries.
+//
+// Adapter contract:
 //   name, chainId, sender
-//   anchor(root, fromSeq, toSeq)  -> { tx_hash, block_number, block_time }
-//   fetchAnchors()                -> [{ root, from_seq, to_seq, sender, tx_hash, block_number }]
+//   anchor(root, windowStart, windowEnd, leafCount)
+//     -> { tx_hash, block_number, block_time, sequence }
+//   fetchAnchors()
+//     -> [{ sequence, root, window_start, window_end, leaf_count, tx_hash, block_number }]
 //
 // Adapters:
-//   local  (default) - a simulated chain in the local_chain table. Keeps every
-//            demo and CI run deterministic with no RPC, no wallet, no gas.
-//   rpc    - the real thing: sends anchor(bytes32,uint64,uint64) transactions
-//            to an AnchorRegistry contract (contracts/AnchorRegistry.sol) on
-//            any EVM chain via raw JSON-RPC. No web3 dependency: legacy
-//            EIP-155 transactions, RLP-encoded and secp256k1-signed here.
+//   local  (default) - a simulated chain in local_chain. Deterministic, no RPC,
+//            no wallet, no gas. chain_id 0 marks a simulated anchor.
+//   rpc    - real RootAnchored transactions to an AnchorRegistry contract
+//            (contracts/AnchorRegistry.sol) on any EVM chain via raw JSON-RPC.
+//            No web3 dependency: EIP-1559 (type-2) txs, RLP-encoded and
+//            secp256k1-signed here. Type-2 is required for OP-stack chains such
+//            as Base, whose op-geth rejects the legacy EIP-155 encoding at
+//            intake ("insufficient funds ... have 0") before it ever debits the
+//            account; type-2 is also the modern default on all EVM L1s/L2s.
 //
 // Selection mirrors src/llm.js / src/registry.js: ANCHOR_RPC_URL implies rpc;
-// ANCHOR_PROVIDER forces. Cadence (all from config/env, never hardcoded):
-//   DEBOUNCE_SECONDS (default 300)  - batch entries, anchor once per burst
-//   HEARTBEAT_HOURS  (default 24)   - re-anchor last root as liveness signal
-//   ALERT_AFTER_MINUTES (default 30) - alert if anchoring keeps failing
+// ANCHOR_PROVIDER forces. Cadence config (env, never hardcoded):
+//   ANCHOR_WINDOW_HOURS (default 12)  - window length; also the tick interval
+//   ALERT_AFTER_MINUTES (default 30)  - alert if anchoring keeps failing
 const crypto = require('node:crypto');
 const { keccak_256 } = require('@noble/hashes/sha3.js');
 const { secp256k1 } = require('@noble/curves/secp256k1.js');
@@ -30,6 +42,22 @@ const strip0x = (h) => (h.startsWith('0x') ? h.slice(2) : h);
 const toBytes = (hex) => Uint8Array.from(Buffer.from(strip0x(hex), 'hex'));
 const toHex = (bytes) => `0x${Buffer.from(bytes).toString('hex')}`;
 
+// ---------- window leaf selection (single source of truth) ---------------------
+
+// Unix seconds of an event's ISO timestamp.
+const unixSeconds = (iso) => Math.floor(new Date(iso).getTime() / 1000);
+
+// Log entries covered by (windowStart, windowEnd], in seq order. Both the
+// anchoring service and the proof builder (src/receipts.js) call this so the
+// leaf set that produced a root is exactly the leaf set a proof rebuilds from.
+function windowEntries(db, windowStart, windowEnd) {
+  return db.prepare('SELECT seq, at, entry_hash FROM event_log ORDER BY seq').all()
+    .filter((r) => {
+      const t = unixSeconds(r.at);
+      return t > Number(windowStart) && t <= Number(windowEnd);
+    });
+}
+
 // ---------- local adapter ------------------------------------------------------
 
 class LocalAnchorAdapter {
@@ -40,19 +68,23 @@ class LocalAnchorAdapter {
     this.sender = eip712.addressOf(keys.platformPubkey());
   }
 
-  async anchor(root, fromSeq, toSeq) {
+  async anchor(root, windowStart, windowEnd, leafCount) {
+    const seqRow = this.db.prepare('SELECT COUNT(*) AS n FROM local_chain').get();
+    const sequence = Number(seqRow.n);
     const txHash = `0x${crypto.createHash('sha256')
-      .update(`local-anchor:${root}:${fromSeq}:${toSeq}:${this.sender}`).digest('hex')}`;
+      .update(`local-anchor:${sequence}:${root}:${windowStart}:${windowEnd}:${leafCount}:${this.sender}`)
+      .digest('hex')}`;
     const info = this.db.prepare(
-      'INSERT INTO local_chain (root, from_seq, to_seq, sender, tx_hash) VALUES (?, ?, ?, ?, ?)',
-    ).run(root, fromSeq, toSeq, this.sender, txHash);
+      'INSERT INTO local_chain (sequence, root, window_start, window_end, leaf_count, sender, tx_hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(sequence, root, windowStart, windowEnd, leafCount, this.sender, txHash);
     const row = this.db.prepare('SELECT * FROM local_chain WHERE block_number = ?').get(Number(info.lastInsertRowid));
-    return { tx_hash: txHash, block_number: Number(row.block_number), block_time: row.block_time };
+    return { tx_hash: txHash, block_number: Number(row.block_number), block_time: row.block_time, sequence };
   }
 
   async fetchAnchors() {
     return this.db.prepare('SELECT * FROM local_chain ORDER BY block_number').all().map((r) => ({
-      root: r.root, from_seq: Number(r.from_seq), to_seq: Number(r.to_seq),
+      sequence: Number(r.sequence), root: r.root,
+      window_start: Number(r.window_start), window_end: Number(r.window_end), leaf_count: Number(r.leaf_count),
       sender: r.sender, tx_hash: r.tx_hash, block_number: Number(r.block_number),
     }));
   }
@@ -60,7 +92,7 @@ class LocalAnchorAdapter {
 
 // ---------- rpc adapter --------------------------------------------------------
 
-// Minimal RLP for legacy transactions: byte strings and lists only.
+// Minimal RLP for transactions: byte strings and lists only.
 function rlpEncode(item) {
   if (Array.isArray(item)) {
     const body = Buffer.concat(item.map(rlpEncode));
@@ -85,8 +117,8 @@ function qty(n) {
   return Buffer.from(hex, 'hex');
 }
 
-const ANCHOR_SELECTOR = toHex(keccak_256(Buffer.from('anchor(bytes32,uint64,uint64)', 'utf8'))).slice(0, 10);
-const ANCHORED_TOPIC = toHex(keccak_256(Buffer.from('Anchored(bytes32,uint64,uint64,address)', 'utf8')));
+const ANCHOR_SELECTOR = toHex(keccak_256(Buffer.from('anchor(bytes32,uint64,uint64,uint32)', 'utf8'))).slice(0, 10);
+const ROOT_ANCHORED_TOPIC = toHex(keccak_256(Buffer.from('RootAnchored(uint256,bytes32,uint64,uint64,uint32)', 'utf8')));
 const word = (hex) => strip0x(hex).padStart(64, '0');
 const uintWord = (n) => BigInt(n).toString(16).padStart(64, '0');
 
@@ -96,7 +128,9 @@ class RpcAnchorAdapter {
     this.rpcUrl = rpcUrl || env.ANCHOR_RPC_URL;
     this.contract = contractAddress || env.ANCHOR_CONTRACT_ADDRESS;
     this.signerKey = signerKey || env.ANCHOR_SIGNER_KEY;
-    this.chainId = Number(chainId || env.ANCHOR_CHAIN_ID || 84532);
+    // Base mainnet by default; override with ANCHOR_CHAIN_ID (e.g. 84532 for
+    // Base Sepolia). This is the chain id signed into the type-2 anchor writes.
+    this.chainId = Number(chainId || env.ANCHOR_CHAIN_ID || 8453);
     if (!this.rpcUrl || !this.contract || !this.signerKey) {
       throw new Error('rpc anchor adapter needs ANCHOR_RPC_URL, ANCHOR_CONTRACT_ADDRESS and ANCHOR_SIGNER_KEY');
     }
@@ -116,38 +150,76 @@ class RpcAnchorAdapter {
     return data.result;
   }
 
-  // Legacy EIP-155 transaction, signed locally - no web3 library.
-  signTx({ nonce, gasPrice, gas, data }) {
-    const unsigned = [qty(nonce), qty(gasPrice), qty(gas), toBytes(this.contract), qty(0), toBytes(data),
-      qty(this.chainId), Buffer.alloc(0), Buffer.alloc(0)];
-    const digest = keccak_256(rlpEncode(unsigned));
-    const sig = secp256k1.sign(digest, toBytes(this.signerKey), { format: 'recovered' });
-    const v = BigInt(this.chainId) * 2n + 35n + BigInt(sig[0]);
-    const r = sig.slice(1, 33); const s = sig.slice(33, 65);
+  // EIP-1559 (type-2) transaction, signed locally - no web3 library. The tx
+  // fields, in canonical order:
+  //   [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gas, to, value,
+  //    data, accessList]
+  // The signing digest is keccak256(0x02 || rlp(fields)); the raw tx is
+  //   0x02 || rlp([...fields, yParity, r, s]).
+  // Legacy EIP-155 is deliberately gone: OP-stack nodes (Base) reject it.
+  signTx({ nonce, maxPriorityFeePerGas, maxFeePerGas, gas, data }) {
+    const fields = [
+      qty(this.chainId), qty(nonce), qty(maxPriorityFeePerGas), qty(maxFeePerGas),
+      qty(gas), toBytes(this.contract), qty(0), toBytes(data), [],
+    ];
+    const digest = keccak_256(Buffer.concat([Buffer.from([0x02]), rlpEncode(fields)]));
+    // prehash:false is REQUIRED: `digest` is already the final 32-byte tx sighash
+    // (keccak256 over 0x02||rlp(fields)). @noble/curves v2 defaults to
+    // prehash:true, which would sha256 the digest again before signing - a
+    // silent double-hash. The resulting signature is internally consistent (it
+    // would even pass @noble's own verify) but recovers to the WRONG address on
+    // chain, so op-geth looks up a zero-balance account and rejects the tx with
+    // "insufficient funds ... have 0". Signing the raw digest is what ecrecover
+    // and every EVM node expect.
+    const sig = secp256k1.sign(digest, toBytes(this.signerKey), { format: 'recovered', prehash: false });
+    // r and s are RLP-encoded as minimal big-endian byte strings.
     const stripZeros = (b) => { let i = 0; while (i < b.length - 1 && b[i] === 0) i++; return Buffer.from(b.slice(i)); };
-    return toHex(rlpEncode([qty(nonce), qty(gasPrice), qty(gas), toBytes(this.contract), qty(0), toBytes(data),
-      qty(v), stripZeros(r), stripZeros(s)]));
+    const yParity = qty(sig[0]); // 0 or 1
+    const r = stripZeros(Buffer.from(sig.slice(1, 33)));
+    const s = stripZeros(Buffer.from(sig.slice(33, 65)));
+    const signed = rlpEncode([...fields, yParity, r, s]);
+    return toHex(Buffer.concat([Buffer.from([0x02]), signed]));
   }
 
-  async anchor(root, fromSeq, toSeq) {
+  async anchor(root, windowStart, windowEnd, leafCount) {
     const onChainId = Number(await this.rpc('eth_chainId'));
     if (onChainId !== this.chainId) {
       throw new Error(`chain id mismatch: RPC says ${onChainId}, config says ${this.chainId}`);
     }
-    const data = `${ANCHOR_SELECTOR}${word(root)}${uintWord(fromSeq)}${uintWord(toSeq)}`;
+    const data = `${ANCHOR_SELECTOR}${word(root)}${uintWord(windowStart)}${uintWord(windowEnd)}${uintWord(leafCount)}`;
     const nonce = Number(await this.rpc('eth_getTransactionCount', [this.sender, 'pending']));
-    const gasPrice = BigInt(await this.rpc('eth_gasPrice'));
-    const raw = this.signTx({ nonce, gasPrice, gas: 100_000, data });
+    // EIP-1559 fees from the network: tip from eth_maxPriorityFeePerGas, cap
+    // from the pending block's baseFee. maxFee = baseFee*2 + tip leaves headroom
+    // for a base-fee rise across the next few blocks (the OP-stack L1 data fee
+    // is charged on top by the node and needs no field here).
+    const priority = BigInt(await this.rpc('eth_maxPriorityFeePerGas'));
+    const pendingBlock = await this.rpc('eth_getBlockByNumber', ['pending', false]);
+    const baseFee = BigInt(pendingBlock.baseFeePerGas || '0x0');
+    const maxPriorityFeePerGas = priority;
+    const maxFeePerGas = baseFee * 2n + maxPriorityFeePerGas;
+    const raw = this.signTx({ nonce, maxPriorityFeePerGas, maxFeePerGas, gas: 100_000, data });
     const txHash = await this.rpc('eth_sendRawTransaction', [raw]);
     for (let i = 0; i < 30; i++) {
       const receipt = await this.rpc('eth_getTransactionReceipt', [txHash]);
       if (receipt) {
         if (receipt.status !== '0x1') throw new Error(`anchor tx ${txHash} reverted`);
-        const block = await this.rpc('eth_getBlockByNumber', [receipt.blockNumber, false]);
+        const log = (receipt.logs || []).find((l) => (l.topics || [])[0] === ROOT_ANCHORED_TOPIC);
+        const sequence = log ? Number(BigInt(log.topics[1])) : null;
+        // The block header can lag the receipt on some providers (the receipt is
+        // served from the txpool/tracer before the block is fully indexed), so
+        // eth_getBlockByNumber may briefly return null. Retry a few times; the
+        // anchor is already mined, so never throw here - fall back to null time
+        // rather than lose a recorded anchor and risk re-anchoring the window.
+        let block = null;
+        for (let j = 0; j < 5 && !block; j++) {
+          block = await this.rpc('eth_getBlockByNumber', [receipt.blockNumber, false]);
+          if (!block) await new Promise((r) => setTimeout(r, 1000));
+        }
         return {
           tx_hash: txHash,
           block_number: Number(receipt.blockNumber),
-          block_time: new Date(Number(block.timestamp) * 1000).toISOString(),
+          block_time: block ? new Date(Number(block.timestamp) * 1000).toISOString() : null,
+          sequence,
         };
       }
       await new Promise((r) => setTimeout(r, 2000));
@@ -161,13 +233,14 @@ class RpcAnchorAdapter {
   // independent RPC and compare, or run the open verifier against any node.
   async fetchAnchors() {
     const logs = await this.rpc('eth_getLogs', [{
-      address: this.contract, topics: [ANCHORED_TOPIC], fromBlock: '0x0', toBlock: 'latest',
+      address: this.contract, topics: [ROOT_ANCHORED_TOPIC], fromBlock: '0x0', toBlock: 'latest',
     }]);
     return logs.map((log) => ({
-      root: `0x${strip0x(log.topics[1])}`,
-      from_seq: Number(BigInt(`0x${strip0x(log.data).slice(0, 64)}`)),
-      to_seq: Number(BigInt(`0x${strip0x(log.data).slice(64, 128)}`)),
-      sender: `0x${strip0x(log.topics[2]).slice(-40)}`,
+      sequence: Number(BigInt(log.topics[1])),
+      root: `0x${strip0x(log.topics[2])}`,
+      window_start: Number(BigInt(`0x${strip0x(log.data).slice(0, 64)}`)),
+      window_end: Number(BigInt(`0x${strip0x(log.data).slice(64, 128)}`)),
+      leaf_count: Number(BigInt(`0x${strip0x(log.data).slice(128, 192)}`)),
       tx_hash: log.transactionHash,
       block_number: Number(log.blockNumber),
     }));
@@ -183,39 +256,51 @@ function createAnchorAdapter(db, env = process.env) {
 
 // ---------- anchoring core -----------------------------------------------------
 
-// Anchor everything not yet covered. One Merkle root over the pending range.
-async function anchorPending(db, adapter) {
-  const last = db.prepare('SELECT COALESCE(MAX(to_seq), 0) AS s FROM anchors WHERE heartbeat = 0').get();
-  const fromSeq = Number(last.s) + 1;
-  const maxRow = db.prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM event_log').get();
-  const toSeq = Number(maxRow.s);
-  if (toSeq < fromSeq) return null; // nothing pending
-  const leaves = db.prepare('SELECT entry_hash FROM event_log WHERE seq BETWEEN ? AND ? ORDER BY seq')
-    .all(fromSeq, toSeq).map((r) => r.entry_hash);
-  const root = merkleRoot(leaves);
-  const receipt = await adapter.anchor(root, fromSeq, toSeq);
-  db.prepare(
-    'INSERT INTO anchors (root, from_seq, to_seq, chain_id, tx_hash, block_number, block_time, heartbeat) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
-  ).run(root, fromSeq, toSeq, adapter.chainId, receipt.tx_hash, receipt.block_number ?? null, receipt.block_time ?? null);
-  return { root, from_seq: fromSeq, to_seq: toSeq, ...receipt };
-}
-
-// Liveness heartbeat: re-anchor the last root (from == to == last anchored
-// seq). Its absence on chain is itself an alarm signal for outside observers.
-async function anchorHeartbeat(db, adapter) {
-  const last = db.prepare('SELECT * FROM anchors WHERE heartbeat = 0 ORDER BY id DESC LIMIT 1').get();
-  if (!last) return null;
-  const seq = Number(last.to_seq);
-  const receipt = await adapter.anchor(last.root, seq, seq);
-  db.prepare(
-    'INSERT INTO anchors (root, from_seq, to_seq, chain_id, tx_hash, block_number, block_time, heartbeat) VALUES (?, ?, ?, ?, ?, ?, ?, 1)',
-  ).run(last.root, seq, seq, adapter.chainId, receipt.tx_hash, receipt.block_number ?? null, receipt.block_time ?? null);
-  return { root: last.root, from_seq: seq, to_seq: seq, ...receipt };
+// Anchor one window: (last anchored window_end, now]. Always emits - an empty
+// window goes out with leafCount 0 and the zero root. `now` is injectable for
+// tests and for deterministic scheduling. Returns null only for a degenerate
+// zero-width window (two calls within the same second), never as a content skip.
+function anchorPending(db, adapter, { now = Date.now() } = {}) {
+  const nowSec = Math.floor(now / 1000);
+  const lastEnd = db.prepare('SELECT MAX(window_end) AS e FROM anchors').get().e;
+  let windowStart;
+  if (lastEnd != null) {
+    windowStart = Number(lastEnd);
+  } else {
+    // First anchor: start just before the earliest event so the opening window
+    // covers the whole log; on an empty log, start at the current second so the
+    // first non-empty window opens cleanly.
+    const first = db.prepare('SELECT MIN(at) AS a FROM event_log').get().a;
+    windowStart = first ? unixSeconds(first) - 1 : nowSec - 1;
+  }
+  // Close at the last FULLY-ELAPSED second (nowSec - 1), never the second in
+  // progress. An event inserted "now" gets a timestamp of nowSec; if we closed
+  // at nowSec, such an event landing after we read the log would fall on the
+  // window boundary yet be absent from the anchored leaf set, and the next
+  // window (which selects t > windowStart == this windowEnd) would exclude it
+  // forever - a silent orphan. Deferring the current second to the next window
+  // guarantees every entry is eventually covered.
+  const windowEnd = nowSec - 1;
+  if (windowEnd <= windowStart) return null; // no fully-elapsed time since last anchor
+  const entries = windowEntries(db, windowStart, windowEnd);
+  const root = merkleRoot(entries.map((r) => r.entry_hash));
+  const leafCount = entries.length;
+  return Promise.resolve(adapter.anchor(root, windowStart, windowEnd, leafCount)).then((receipt) => {
+    db.prepare(
+      'INSERT INTO anchors (sequence, root, window_start, window_end, leaf_count, chain_id, tx_hash, block_number, block_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(receipt.sequence, root, windowStart, windowEnd, leafCount, adapter.chainId,
+      receipt.tx_hash, receipt.block_number ?? null, receipt.block_time ?? null);
+    return {
+      sequence: receipt.sequence, root, window_start: windowStart, window_end: windowEnd,
+      leaf_count: leafCount, ...receipt,
+    };
+  });
 }
 
 // Self-monitor: reconcile our anchors table against what the chain shows.
-// Alerts on: an anchor we recorded but the chain lacks (missing), an anchor
-// from our sender we never recorded (possible key compromise), root mismatch.
+// Alerts on: an anchor we recorded but the chain lacks (missing), an anchor on
+// chain we never recorded (the contract only lets the anchorer write, so an
+// unrecorded one signals key compromise or an out-of-band call), root mismatch.
 async function reconcile(db, adapter) {
   const chain = await adapter.fetchAnchors();
   const ours = db.prepare('SELECT * FROM anchors WHERE chain_id = ? ORDER BY id').all(adapter.chainId);
@@ -228,8 +313,8 @@ async function reconcile(db, adapter) {
     else if (seen.root !== a.root) alerts.push({ kind: 'root_mismatch', tx_hash: a.tx_hash, ours: a.root, chain: seen.root });
   }
   for (const a of chain) {
-    if (a.sender.toLowerCase() === adapter.sender.toLowerCase() && !oursByTx.has(a.tx_hash)) {
-      alerts.push({ kind: 'unknown_anchor_from_our_sender', tx_hash: a.tx_hash, root: a.root });
+    if (!oursByTx.has(a.tx_hash)) {
+      alerts.push({ kind: 'unknown_anchor_on_chain', tx_hash: a.tx_hash, root: a.root, sequence: a.sequence });
     }
   }
   return { ok: alerts.length === 0, checked: ours.length, alerts };
@@ -237,13 +322,13 @@ async function reconcile(db, adapter) {
 
 // ---------- worker -------------------------------------------------------------
 
-// Hybrid cadence: debounced batching after activity plus a daily heartbeat.
-// Retries with exponential backoff; alerts (log + optional webhook) once
-// anchoring has been failing longer than alertAfterMinutes.
+// Windowed cadence: one anchor per ANCHOR_WINDOW_HOURS, always. On failure it
+// retries the SAME window (nothing is recorded until the anchor succeeds, so
+// window_start does not advance) with exponential backoff, and alerts (log +
+// optional webhook) once anchoring has been failing longer than alertAfterMinutes.
 function createAnchorWorker(db, { adapter, env = process.env, onAlert } = {}) {
   const a = adapter || createAnchorAdapter(db, env);
-  const debounceMs = Number(env.DEBOUNCE_SECONDS ?? 300) * 1000;
-  const heartbeatMs = Number(env.HEARTBEAT_HOURS ?? 24) * 3600 * 1000;
+  const windowMs = Number(env.ANCHOR_WINDOW_HOURS ?? 12) * 3600 * 1000;
   const alertAfterMs = Number(env.ALERT_AFTER_MINUTES ?? 30) * 60 * 1000;
   const alertWebhook = env.ALERT_WEBHOOK_URL || null;
 
@@ -264,28 +349,11 @@ function createAnchorWorker(db, { adapter, env = process.env, onAlert } = {}) {
     }
   };
 
-  const oldestPendingAt = () => {
-    const last = db.prepare('SELECT COALESCE(MAX(to_seq), 0) AS s FROM anchors WHERE heartbeat = 0').get();
-    const row = db.prepare('SELECT at FROM event_log WHERE seq > ? ORDER BY seq LIMIT 1').get(Number(last.s));
-    return row ? new Date(row.at).getTime() : null;
-  };
-  const lastAnchorAt = () => {
-    const row = db.prepare('SELECT created_at FROM anchors ORDER BY id DESC LIMIT 1').get();
-    return row ? new Date(`${row.created_at}Z`).getTime() : null;
-  };
-
   async function tick() {
     try {
-      const pending = oldestPendingAt();
-      if (pending !== null && Date.now() - pending >= debounceMs) {
-        const done = await anchorPending(db, a);
-        if (done) console.log(`[anchor] anchored seq ${done.from_seq}..${done.to_seq} root ${done.root.slice(0, 18)}… (${a.name}, tx ${done.tx_hash.slice(0, 18)}…)`);
-      } else {
-        const lastAt = lastAnchorAt();
-        if (lastAt !== null && Date.now() - lastAt >= heartbeatMs) {
-          const hb = await anchorHeartbeat(db, a);
-          if (hb) console.log(`[anchor] heartbeat re-anchored seq ${hb.to_seq} (${a.name})`);
-        }
+      const done = await anchorPending(db, a);
+      if (done) {
+        console.log(`[anchor] window ${done.window_start}..${done.window_end} → seq ${done.sequence}, ${done.leaf_count} leaves, root ${done.root.slice(0, 18)}… (${a.name}, tx ${done.tx_hash.slice(0, 18)}…)`);
       }
       failingSince = null;
       backoffMs = 5000;
@@ -297,7 +365,7 @@ function createAnchorWorker(db, { adapter, env = process.env, onAlert } = {}) {
         alert(`anchoring has been failing for ${Math.round((Date.now() - failingSince) / 60000)} minutes: ${err.message}`);
       }
     }
-    timer = setTimeout(tick, failingSince ? backoffMs : Math.min(debounceMs, 60_000));
+    timer = setTimeout(tick, failingSince ? backoffMs : windowMs);
     if (timer.unref) timer.unref();
   }
 
@@ -310,6 +378,6 @@ function createAnchorWorker(db, { adapter, env = process.env, onAlert } = {}) {
 
 module.exports = {
   LocalAnchorAdapter, RpcAnchorAdapter, createAnchorAdapter,
-  anchorPending, anchorHeartbeat, reconcile, createAnchorWorker,
-  ANCHOR_SELECTOR, ANCHORED_TOPIC,
+  anchorPending, reconcile, createAnchorWorker, windowEntries, unixSeconds,
+  ANCHOR_SELECTOR, ROOT_ANCHORED_TOPIC,
 };

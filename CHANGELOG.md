@@ -26,12 +26,20 @@ default configuration every route behaves exactly as in 0.1.1. Candidate v0.2.0.
   upgrades to self-custody, with `GET /engagements/{id}/agreement-preview`
   exposing the exact digests to sign). Every lifecycle mutation appends one
   entry to a hash-chained append-only event log (UPDATE/DELETE blocked by
-  triggers, free text and evidence bytes never logged - only hashes). Merkle
-  roots are anchored on a hybrid cadence (`DEBOUNCE_SECONDS`,
-  `HEARTBEAT_HOURS`) through the event-only permissionless
-  `contracts/AnchorRegistry.sol`; the `local` adapter (default) keeps CI
-  deterministic and the `rpc` adapter posts real transactions to any EVM
-  chain. Both parties get signed receipts with Merkle inclusion proofs
+  triggers, free text and evidence bytes never logged - only hashes). A
+  domain-separated Merkle root (leaf `SHA-256(0x00 || entry_hash)`, node
+  `SHA-256(0x01 || left || right)`) is anchored once per window
+  (`ANCHOR_WINDOW_HOURS`, default 12) to `contracts/AnchorRegistry.sol` on
+  **Base mainnet**, written by a single authorized anchorer and **always
+  emitting — empty windows included** (`leafCount = 0`), so a gap in the
+  on-chain sequence is the liveness alarm
+  ([ADR-002](docs/adr/002-windowed-anchoring-base.md)). The event is
+  `RootAnchored(sequence, root, windowStart, windowEnd, leafCount)`; the `local`
+  adapter (default) keeps CI deterministic and the `rpc` adapter posts real
+  transactions to any EVM chain (`ANCHOR_CHAIN_ID` default 8453).
+  `scripts/deploy-anchor-registry.js` compiles (pinned solc) and deploys the
+  contract to Base Sepolia or Base mainnet (`DEPLOY_NETWORK`) with the same raw
+  EIP-155 signer, emitting the Basescan standard-JSON input. Both parties get signed receipts with Merkle inclusion proofs
   (`GET /api/engagements/{id}/proof`), verifiable by the new independent
   `pacta-verify` CLI (`packages/verifier`, zero backend imports), by the
   in-browser `/verify.html`, or server-side via `POST /api/verify`.

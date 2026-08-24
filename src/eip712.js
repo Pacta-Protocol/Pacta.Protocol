@@ -16,9 +16,10 @@ const { keccak_256 } = require('@noble/hashes/sha3.js');
 const DOMAIN_NAME = 'Pacta';
 const DOMAIN_VERSION = '1';
 
-// The signing domain is bound to the anchor chain (default: Base Sepolia) so
-// signatures stay valid for a potential Phase 1 vault on that chain.
-const chainId = () => Number(process.env.ANCHOR_CHAIN_ID || 84532);
+// The signing domain is bound to the anchor chain (default: Base mainnet, the
+// reference network) so signatures stay valid for a potential Phase 1 vault on
+// that chain. Override with ANCHOR_CHAIN_ID (e.g. 84532 for Base Sepolia).
+const chainId = () => Number(process.env.ANCHOR_CHAIN_ID || 8453);
 
 const strip0x = (h) => (h.startsWith('0x') ? h.slice(2) : h);
 const toBytes = (hex) => Uint8Array.from(Buffer.from(strip0x(hex), 'hex'));

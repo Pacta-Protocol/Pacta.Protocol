@@ -1,0 +1,3 @@
+# Foundry build artifacts (contracts/out) from `forge test`.
+out/
+cache/

@@ -6,7 +6,7 @@ const { createApp } = require('./src/app');
 const PORT = Number(process.env.PORT || 3210);
 const { app, db, seeded } = createApp();
 
-// Phase 0 (ADR-001): anchor event-log Merkle roots on a hybrid cadence.
+// Base Readiness (ADR-002): anchor event-log Merkle roots once per 12h window.
 // ANCHOR_AUTOSTART=0 disables (e.g. when running a standalone worker).
 const { createAnchorWorker } = require('./src/anchor');
 const anchorWorker = process.env.ANCHOR_AUTOSTART === '0' ? null : createAnchorWorker(db, {});

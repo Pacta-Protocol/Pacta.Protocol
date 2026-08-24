@@ -1,6 +1,6 @@
 # ADR-001: Cryptographic Agreement Immutability (Phase 0)
 
-- **Status:** Accepted (August 2026)
+- **Status:** Accepted (August 2026). Anchoring mechanics (contract shape, cadence, Merkle construction) revised by [ADR-002](002-windowed-anchoring-base.md); the trust analysis and the Certificate-Transparency decision below still stand.
 - **Deciders:** CTO / core team
 - **Tags:** trust-layer, cryptography, blockchain, architecture
 
@@ -22,7 +22,7 @@ Adopt the **Certificate Transparency pattern** for agreements (Phase 0), and def
 
 1. **Canonical agreements, dually signed.** Agreement terms are serialized with RFC 8785 (JCS) and hashed with SHA-256; `agreement_hash` is the universal engagement ID. Buyer and provider sign the hash via EIP-712 (secp256k1). EIP-712 is chosen over Ed25519 solely for forward compatibility with a potential Phase 1 escrow vault.
 2. **Hash-chained append-only event log.** Every lifecycle event appends an entry containing the previous entry's hash. Database triggers forbid UPDATE/DELETE. Evidence bytes and free text never enter the log; only hashes and metadata.
-3. **Public anchoring, event-only contract.** A permissionless ~10-line `AnchorRegistry` contract on a low-cost L2 emits `Anchored(root, fromSeq, toSeq, sender)`; it writes no storage and holds no funds. Anchoring runs on a hybrid cadence: debounced batching minutes after activity, plus a daily heartbeat anchor whose absence itself signals a problem. No business data ever reaches the chain.
+3. **Public anchoring, event-only contract.** An `AnchorRegistry` contract on a low-cost L2 emits an anchoring event; it writes no storage (only a sequence counter) and holds no funds. No business data ever reaches the chain. *(Revised by ADR-002: the contract is now written by a single authorized anchorer, emits `RootAnchored(sequence, root, windowStart, windowEnd, leafCount)`, anchors on fixed 12h windows that always emit — empty windows included — and the Merkle tree is domain-separated. Base mainnet is the deployment. See ADR-002 for the exact construction.)*
 4. **Receipts and an independent verifier.** Each party receives signed receipts with Merkle inclusion proofs to anchored roots. An open-source verifier (CLI + browser page) with zero backend dependencies lets anyone confirm integrity, or prove tampering, without Pacta's cooperation.
 
 ## Consequences

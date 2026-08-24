@@ -65,7 +65,7 @@ flowchart LR
     BE["Backends and scripts"]
     UI["Reference explorer UI"]
   end
-  MCP["MCP server<br/>(stdio, 12 tools)"]
+  MCP["MCP server<br/>(stdio, 14 tools)"]
   API["REST API"]
   subgraph engine ["Protocol engine"]
     LC["Lifecycle state machine (§4)"]
@@ -423,7 +423,7 @@ fields) rather than raw API responses: smaller context, clearer decisions.
 Tool failures MUST be reported as MCP tool errors (`isError`) carrying the
 API's HTTP status and message, not as protocol crashes.
 
-The 12 tools and their REST mappings:
+The 14 tools and their REST mappings:
 
 | Tool | Arguments | REST call | Notes |
 | --- | --- | --- | --- |
@@ -438,6 +438,8 @@ The 12 tools and their REST mappings:
 | `approve_and_release_payment` | `engagement_id` | `POST …/approve` | T6. Irreversible; the description MUST warn the agent to verify proofs first. |
 | `reject_and_open_dispute` | `engagement_id`, `reason` | `POST …/reject` | T7. |
 | `rate_provider` | `engagement_id`, `value ∈ {good, bad}` | `POST …/rate` | §11. |
+| `get_agreement_proof` | `engagement_id` | `GET …/engagements/{id}/proof` | Signed, hash-chained receipts with Merkle paths to anchored roots (ADR-001). |
+| `verify_agreement_integrity` | `receipt` | `POST /api/verify` | Re-checks a receipt and returns everything needed to re-run the checks independently. |
 | `get_my_balance` | — | `GET /api/agents/{AGENT_ID}` | |
 
 The server also publishes a machine-readable manifest of the underlying REST
