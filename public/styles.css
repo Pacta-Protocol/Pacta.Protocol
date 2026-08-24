@@ -103,6 +103,14 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.integrity-chip {
+  text-decoration: none; cursor: pointer;
+  background: rgba(120,255,180,.09); color: #7effb0;
+  border-color: rgba(120,255,180,.28);
+}
+.integrity-chip:hover { background: rgba(120,255,180,.16); }
+.integrity-chip[href=""], .integrity-chip:not([href]) { cursor: default; opacity: .8; }
+
 .error-banner {
   background: var(--bad-bg); color: var(--bad);
   border-bottom: 1px solid #f4c7c3;
