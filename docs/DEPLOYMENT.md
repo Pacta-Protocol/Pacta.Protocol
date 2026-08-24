@@ -104,6 +104,27 @@ mainnet). The service anchors one Merkle root per `ANCHOR_WINDOW_HOURS` window,
 always emitting — empty windows go out with `leafCount = 0`. Verify a receipt end
 to end with `packages/verifier` (`pacta-verify receipt.json --rpc <url>`).
 
+#### Deployed `AnchorRegistry` contracts
+
+The reference `AnchorRegistry` is **deployed and source-verified on Base**. Point
+a production deployment's `rpc` anchoring adapter at the mainnet contract; use the
+Sepolia mirror for testing. Both were deployed 2026-08-23 from
+`scripts/deploy-anchor-registry.js`.
+
+| | Production — Base mainnet | Testnet — Base Sepolia |
+|---|---|---|
+| `ANCHOR_CHAIN_ID` | `8453` | `84532` |
+| `ANCHOR_CONTRACT_ADDRESS` | `0x866316ae68b297cc2b3ed2daaf3cabd4f5e39de1` | `0xb1cb4c8d26e2457705f0ffaa823019c2ba0c4fa2` |
+| `ANCHOR_RPC_URL` | `https://mainnet.base.org` | `https://sepolia.base.org` |
+| Anchorer address | `0x60b134390c33Ae25f4a6f4948b3170fc71F39e67` | `0xd09ff24418Fc067F2C56F16CD486ADB169C9AeEa` |
+| Basescan (source verified) | [mainnet](https://basescan.org/address/0x866316ae68b297cc2b3ed2daaf3cabd4f5e39de1#code) | [sepolia](https://sepolia.basescan.org/address/0xb1cb4c8d26e2457705f0ffaa823019c2ba0c4fa2#code) |
+
+The `ANCHOR_SIGNER_KEY` you configure must be the private key of the anchorer
+address for that network (or a new one you rotate in with `setAnchorer`); keep it
+in a secret store, never in a file. To anchor to production, set
+`ANCHOR_PROVIDER=rpc`, the mainnet `ANCHOR_CONTRACT_ADDRESS`, `ANCHOR_RPC_URL` and
+`ANCHOR_CHAIN_ID=8453`, and fund the anchorer wallet with a little ETH for gas.
+
 ## Notes
 
 - **Website**: the Pacta website lives in its own repository

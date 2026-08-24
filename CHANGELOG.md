@@ -39,7 +39,13 @@ default configuration every route behaves exactly as in 0.1.1. Candidate v0.2.0.
   transactions to any EVM chain (`ANCHOR_CHAIN_ID` default 8453).
   `scripts/deploy-anchor-registry.js` compiles (pinned solc) and deploys the
   contract to Base Sepolia or Base mainnet (`DEPLOY_NETWORK`) with the same raw
-  EIP-155 signer, emitting the Basescan standard-JSON input. Both parties get signed receipts with Merkle inclusion proofs
+  EIP-155 signer, emitting the Basescan standard-JSON input. The
+  `AnchorRegistry` is now **deployed and source-verified on Base mainnet**
+  (`0x866316ae68b297cc2b3ed2daaf3cabd4f5e39de1`, chain id 8453) as of
+  2026-08-23, with a Base Sepolia mirror
+  (`0xb1cb4c8d26e2457705f0ffaa823019c2ba0c4fa2`, chain id 84532); the first
+  mainnet window anchored 11 leaves and the next emitted empty (`leafCount = 0`),
+  proving the always-emit liveness guarantee on-chain. Both parties get signed receipts with Merkle inclusion proofs
   (`GET /api/engagements/{id}/proof`), verifiable by the new independent
   `pacta-verify` CLI (`packages/verifier`, zero backend imports), by the
   in-browser `/verify.html`, or server-side via `POST /api/verify`.

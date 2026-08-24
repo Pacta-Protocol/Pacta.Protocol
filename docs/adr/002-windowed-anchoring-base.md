@@ -1,6 +1,6 @@
 # ADR-002: Windowed Anchoring on Base (Base Readiness)
 
-- **Status:** Accepted (August 2026)
+- **Status:** Accepted (August 2026) — **deployed and source-verified on Base mainnet** (`AnchorRegistry` `0x866316ae68b297cc2b3ed2daaf3cabd4f5e39de1`, chain id 8453) and Base Sepolia (`0xb1cb4c8d26e2457705f0ffaa823019c2ba0c4fa2`, chain id 84532) on 2026-08-23.
 - **Deciders:** CTO / core team
 - **Tags:** trust-layer, cryptography, base, anchoring
 - **Relates to:** revises the anchoring mechanics of [ADR-001](001-cryptographic-immutability.md); the trust analysis and the Certificate-Transparency decision there still stand.
