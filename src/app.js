@@ -9,7 +9,7 @@ const { createApiRouter } = require('./api');
 const { createRegistryAdapter } = require('./registry');
 const { createSettlementBackend } = require('./settlement');
 
-function createApp({ dbPath, pacta, registry, settlement, hardening } = {}) {
+function createApp({ dbPath, pacta, registry, settlement, hardening, hooks = {} } = {}) {
   const isPacta = pacta ?? process.env.PACTA === '1';
   const db = openDb(dbPath);
   const seeded = seedIfEmpty(db, { pacta: isPacta });
@@ -22,6 +22,8 @@ function createApp({ dbPath, pacta, registry, settlement, hardening } = {}) {
   app.disable('x-powered-by');
   app.use('/api', createApiRouter(db, {
     pacta: isPacta, registry: registryAdapter, settlement: settlementBackend, hardening,
+    // Deferred: server wires hooks.afterComplete after the anchor worker exists.
+    anchorHook: () => { if (hooks.afterComplete) hooks.afterComplete(); },
   }));
 
   // Serve index.html with content-hashed asset URLs (app.js?v=…, styles.css?v=…)
@@ -41,7 +43,7 @@ function createApp({ dbPath, pacta, registry, settlement, hardening } = {}) {
   });
   app.use(express.static(publicDir));
 
-  return { app, db, seeded, pacta: isPacta, registry: registryAdapter, settlement: settlementBackend };
+  return { app, db, seeded, pacta: isPacta, registry: registryAdapter, settlement: settlementBackend, hooks };
 }
 
 module.exports = { createApp };

@@ -392,6 +392,15 @@ function createAnchorWorker(db, { adapter, env = process.env, onAlert } = {}) {
     adapter: a,
     start: () => { if (!timer) tick(); },
     stop: () => { if (timer) { clearTimeout(timer); timer = null; } },
+    // Anchor whatever is pending right now, out of band from the 12h schedule.
+    // Used to anchor immediately when an engagement completes.
+    anchorNow: async () => {
+      try {
+        const done = await anchorPending(db, a);
+        if (done) console.log(`[anchor] on-demand → seq ${done.sequence}, ${done.leaf_count} leaves, tx ${done.tx_hash.slice(0, 18)}…`);
+        return done;
+      } catch (err) { console.warn(`[anchor] on-demand failed: ${err.message}`); return null; }
+    },
   };
 }
 

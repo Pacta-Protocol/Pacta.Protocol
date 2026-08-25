@@ -35,7 +35,10 @@ const TRANSITIONS = {
   resolve: { from: ['disputed'], to: 'resolved' },
 };
 
-function createApiRouter(db, { pacta = false, registry = null, settlement = null, hardening = {} } = {}) {
+function createApiRouter(db, { pacta = false, registry = null, settlement = null, hardening = {}, anchorHook = null } = {}) {
+  // Fire-and-forget anchor trigger: when an engagement closes we kick off an
+  // on-chain anchor without blocking the HTTP response (the tx takes seconds).
+  const triggerAnchor = () => { if (anchorHook) Promise.resolve().then(anchorHook).catch(() => {}); };
   const router = express.Router();
   router.use(express.json());
   // Where proof references get verified. Defaults to the seeded local registry;
@@ -731,6 +734,7 @@ function createApiRouter(db, { pacta = false, registry = null, settlement = null
       logEvent(e, 'SettlementApproved', { remaining_drawn_cents: remaining, released_cents: Number(rel.amount_minor) });
     });
     hard.notifyProvider(e.id, 'engagement.completed');
+    triggerAnchor();
     res.json(engagementPublic(getEngagementOr404(e.id)));
   });
 
@@ -796,6 +800,7 @@ function createApiRouter(db, { pacta = false, registry = null, settlement = null
       }
     });
     hard.notifyProvider(e.id, 'engagement.resolved');
+    triggerAnchor();
     res.json(engagementPublic(getEngagementOr404(e.id)));
   });
 
