@@ -117,6 +117,7 @@ body {
   padding: 10px 22px; font-size: 14px; font-weight: 500;
   display: flex; justify-content: space-between; gap: 12px;
 }
+.error-banner[hidden] { display: none; }
 .error-banner button {
   background: none; border: none; color: var(--bad); font-weight: 700; cursor: pointer; font-size: 14px;
 }
