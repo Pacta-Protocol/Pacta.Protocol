@@ -28,13 +28,18 @@ if ((process.env.SETTLEMENT_BACKEND || '').trim().toLowerCase() === 'base-escrow
 
 const PORT = Number(process.env.PORT || 3220);
 const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'pacta.db');
-const { app, db, seeded, registry } = createApp({ dbPath, pacta: true });
+const { app, db, seeded, registry, hooks } = createApp({ dbPath, pacta: true });
 
 // Base Readiness (ADR-002): anchor event-log Merkle roots once per 12h window.
 // ANCHOR_AUTOSTART=0 disables (e.g. when running a standalone worker).
 const { createAnchorWorker } = require('./src/anchor');
 const anchorWorker = process.env.ANCHOR_AUTOSTART === '0' ? null : createAnchorWorker(db, {});
-if (anchorWorker) anchorWorker.start();
+if (anchorWorker) {
+  anchorWorker.start();
+  // Anchor immediately when an engagement closes (default on; ANCHOR_ON_COMPLETE=0
+  // to keep only the 12h schedule). Makes the app anchor a proof right away.
+  if (process.env.ANCHOR_ON_COMPLETE !== '0') hooks.afterComplete = () => anchorWorker.anchorNow();
+}
 
 const server = app.listen(PORT, () => {
   console.log(`[PACTA] Agent Services Marketplace running at http://localhost:${PORT}`);
